@@ -1,0 +1,27 @@
+__pycache__/
+*.pyc
+*.pyo
+.tmp-screenshots/
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+.env
+
+# OmniParser cloned repo + models (large)
+omniparser-server/OmniParser/
+omniparser-server/.venv/
+omniparser-server/weights/
+omniparser-server/models/
+
+# Trajectory data (user-specific)
+E:/NexusData/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store

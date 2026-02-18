@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "nexus": {
+      "type": "stdio",
+      "command": "C:\\Users\\Nitropc\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
+      "args": ["-m", "nexus.mcp_server"],
+      "cwd": "C:\\Users\\Nitropc\\Desktop\\Nexus"
+    }
+  }
+}

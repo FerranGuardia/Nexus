@@ -1,0 +1,30 @@
+[project]
+name = "nexus-mcp"
+version = "0.1.0"
+description = "Claude's eyes and hands on Windows — UIA, CDP, OCR, Vision, COM automation as MCP tools"
+requires-python = ">=3.11"
+dependencies = [
+    "pyautogui>=0.9.54",
+    "pillow>=10.0",
+    "pywinauto>=0.6.8",
+    "pywin32>=306",
+    "mcp>=1.0",
+]
+
+[project.optional-dependencies]
+vision = ["requests"]
+dev = ["pytest>=8.0", "pytest-timeout>=2.2"]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[tool.setuptools.packages.find]
+include = ["nexus*"]
+
+[tool.pytest.ini_options]
+testpaths = ["nexus/tests"]
+markers = [
+    "web: requires Chrome with CDP on port 9222",
+    "action: moves mouse/keyboard (not safe for CI)",
+]

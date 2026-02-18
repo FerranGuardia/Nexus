@@ -1,0 +1,26 @@
+# OmniParser Vision Server dependencies
+# Install in a separate venv from Nexus to avoid conflicts
+#
+# GPU (CUDA 12.x):
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+#   pip install -r requirements.txt
+#
+# CPU only:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+#   pip install -r requirements.txt
+
+# OmniParser core
+transformers==4.45.2
+ultralytics>=8.3.0
+supervision==0.18.0
+easyocr
+openai
+numpy<2.0
+
+# Server
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+
+# Utils
+Pillow>=10.0.0
+huggingface_hub>=0.20.0
