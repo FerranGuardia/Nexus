@@ -54,7 +54,10 @@
       "Edit(*)",
       "Write(*)",
       "WebFetch(*)",
-      "WebSearch(*)"
+      "WebSearch(*)",
+      "mcp__nexus__see",
+      "mcp__nexus__do",
+      "mcp__nexus__memory"
     ]
   }
 }
