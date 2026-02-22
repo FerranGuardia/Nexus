@@ -1,5 +1,5 @@
-"""Entry point for: python -m nexus <command>"""
+"""python -m nexus → starts MCP server."""
 
-from nexus.run import main
+from nexus.server import main
 
 main()
