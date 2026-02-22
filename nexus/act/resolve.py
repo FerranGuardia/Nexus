@@ -32,6 +32,78 @@ import re
 from nexus.act import native, input as raw_input
 
 
+# ---------------------------------------------------------------------------
+# Ordinal parsing — "click the 2nd button", "the third link", etc.
+# ---------------------------------------------------------------------------
+
+ORDINAL_WORDS = {
+    "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5,
+    "sixth": 6, "seventh": 7, "eighth": 8, "ninth": 9, "tenth": 10,
+    "last": -1,
+}
+
+# Matches "1st", "2nd", "3rd", "4th", "11th", "22nd", etc.
+ORDINAL_NUM_RE = re.compile(r"^(\d+)(?:st|nd|rd|th)$", re.IGNORECASE)
+
+
+def _parse_ordinal(text):
+    """Parse ordinal references from a click target.
+
+    Returns (ordinal, role, remaining_label) or None if no ordinal found.
+    ordinal is 1-based (or -1 for "last").
+
+    Supported patterns:
+        "the 2nd button"         → (2, "button", "")
+        "3rd link"               → (3, "link", "")
+        "the last checkbox"      → (-1, "checkbox", "")
+        "first Save button"      → (1, "button", "Save")
+        "button 3"               → (3, "button", "")
+        "second link on the page"→ (2, "link", "")
+    """
+    words = text.split()
+    if not words:
+        return None
+
+    # Strip leading "the"
+    if words[0].lower() == "the":
+        words = words[1:]
+    if not words:
+        return None
+
+    role_words = {"button", "link", "tab", "menu", "field", "checkbox",
+                  "radio", "text", "image", "slider", "switch", "toggle"}
+
+    # Pattern 1: "<ordinal> [label...] <role>" — "2nd button", "third Save button"
+    ordinal = _word_to_ordinal(words[0])
+    if ordinal is not None and len(words) >= 2:
+        # Find the role word (usually the last word)
+        for i in range(len(words) - 1, 0, -1):
+            if words[i].lower() in role_words:
+                role = words[i].lower()
+                label = " ".join(words[1:i]).strip()
+                return (ordinal, role, label)
+
+    # Pattern 2: "<role> <number>" — "button 3", "link 2"
+    if len(words) >= 2 and words[0].lower() in role_words and words[-1].isdigit():
+        role = words[0].lower()
+        ordinal = int(words[-1])
+        label = " ".join(words[1:-1]).strip()
+        return (ordinal, role, label)
+
+    return None
+
+
+def _word_to_ordinal(word):
+    """Convert a word to an ordinal number, or None."""
+    lower = word.lower()
+    if lower in ORDINAL_WORDS:
+        return ORDINAL_WORDS[lower]
+    m = ORDINAL_NUM_RE.match(lower)
+    if m:
+        return int(m.group(1))
+    return None
+
+
 # Key name mappings for "press" intent
 KEY_ALIASES = {
     "cmd": "command", "command": "command",
@@ -199,6 +271,11 @@ def _handle_click(target, double=False, right=False):
             return raw_input.double_click(x, y)
         return raw_input.click(x, y)
 
+    # Check for ordinal reference: "the 2nd button", "3rd link", "last checkbox"
+    ordinal = _parse_ordinal(target)
+    if ordinal:
+        return _click_nth(ordinal, double=double, right=right)
+
     # Parse optional role filter: "click button Save" or "click Save button"
     role = None
     parts = target.split()
@@ -223,6 +300,98 @@ def _handle_click(target, double=False, right=False):
                 raw_input.right_click(at[0], at[1])
 
     return result
+
+
+def _click_nth(ordinal_info, double=False, right=False):
+    """Click the nth element matching a role (and optional label).
+
+    Args:
+        ordinal_info: tuple (ordinal, role, label) from _parse_ordinal.
+    """
+    from nexus.sense.access import describe_app, ax_actions, ax_perform
+
+    n, role, label = ordinal_info
+
+    # Map user-facing role names to AX role substrings
+    ROLE_MAP = {
+        "button": "button", "link": "link", "tab": "tab",
+        "menu": "menu", "field": "text", "checkbox": "checkbox",
+        "radio": "radio", "text": "static text", "image": "image",
+        "slider": "slider", "switch": "switch", "toggle": "switch",
+    }
+    role_match = ROLE_MAP.get(role, role)
+
+    elements = describe_app()
+
+    # Filter by role
+    matches = [el for el in elements if role_match in el.get("role", "").lower()]
+
+    # Filter by label if provided
+    if label:
+        label_lower = label.lower()
+        labeled = [el for el in matches if label_lower in el.get("label", "").lower()]
+        if labeled:
+            matches = labeled
+
+    if not matches:
+        return {
+            "ok": False,
+            "error": f'No {role}s found' + (f' matching "{label}"' if label else ''),
+            "available": [f'{el["role"]}: {el.get("label", "")}' for el in elements[:15]],
+        }
+
+    # Resolve ordinal (-1 = last)
+    if n == -1:
+        idx = len(matches) - 1
+    else:
+        idx = n - 1  # 1-based to 0-based
+
+    if idx < 0 or idx >= len(matches):
+        return {
+            "ok": False,
+            "error": f'Requested {role} #{n} but only {len(matches)} found',
+        }
+
+    target = matches[idx]
+    ref = target.get("_ref")
+    if not ref:
+        return {"ok": False, "error": "No element reference"}
+
+    # Click via AX action
+    actions = ax_actions(ref)
+    clicked = False
+    if "AXPress" in actions:
+        clicked = ax_perform(ref, "AXPress")
+    elif "AXConfirm" in actions:
+        clicked = ax_perform(ref, "AXConfirm")
+
+    # Handle double/right click or fallback to coordinates
+    pos = target.get("pos")
+    size = target.get("size")
+    if pos and size:
+        cx, cy = pos[0] + size[0] // 2, pos[1] + size[1] // 2
+        if double:
+            raw_input.double_click(cx, cy)
+            clicked = True
+        elif right:
+            raw_input.right_click(cx, cy)
+            clicked = True
+        elif not clicked:
+            raw_input.click(cx, cy)
+            clicked = True
+
+    if clicked:
+        clean = {k: v for k, v in target.items() if not k.startswith("_")}
+        return {
+            "ok": True,
+            "action": f"click_{role}_{n}",
+            "element": clean,
+            "at": [cx, cy] if pos and size else None,
+            "ordinal": n,
+            "of_total": len(matches),
+        }
+
+    return {"ok": False, "error": f'Found {role} #{n} but could not click it'}
 
 
 def _handle_type(rest):

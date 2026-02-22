@@ -6,8 +6,11 @@ a single, token-efficient text snapshot of the computer.
 
 from nexus.sense import access, screen
 
+# Snapshot storage for diff mode
+_last_snapshot = None
 
-def see(app=None, query=None, screenshot=False, menus=False):
+
+def see(app=None, query=None, screenshot=False, menus=False, diff=False):
     """Main perception function. Returns a text snapshot of the computer.
 
     Args:
@@ -15,10 +18,13 @@ def see(app=None, query=None, screenshot=False, menus=False):
         query: Search for specific elements instead of full tree.
         screenshot: Include a base64 screenshot.
         menus: Include the app's menu bar items (shows available commands).
+        diff: Compare with previous snapshot — show what changed.
 
     Returns:
         dict with 'text' (always) and optionally 'image' (base64 JPEG).
     """
+    global _last_snapshot
+
     trusted = access.is_trusted()
 
     pid = _resolve_pid(app)
@@ -83,6 +89,20 @@ def see(app=None, query=None, screenshot=False, menus=False):
 
     if not elements:
         result_parts.append("  (no elements found)")
+
+    # Diff mode — compare with previous snapshot
+    current_snapshot = _snapshot(elements, wins, focus, app_info)
+    if diff and _last_snapshot is not None:
+        diff_text = _compute_diff(_last_snapshot, current_snapshot)
+        if diff_text:
+            result_parts.append("")
+            result_parts.append(diff_text)
+        else:
+            result_parts.append("")
+            result_parts.append("Changes: (none detected)")
+
+    # Always store snapshot for next diff
+    _last_snapshot = current_snapshot
 
     # Screenshot
     if screenshot:
@@ -151,3 +171,123 @@ def _app_info_for_pid(pid):
         if a["pid"] == pid:
             return a
     return None
+
+
+# ---------------------------------------------------------------------------
+# Diff / change detection
+# ---------------------------------------------------------------------------
+
+def _element_key(el):
+    """Create a hashable key for an element (role + label + pos)."""
+    return (el.get("role", ""), el.get("label", ""), el.get("value", ""))
+
+
+def _snapshot(elements, windows, focus, app_info):
+    """Create a comparable snapshot of the current screen state."""
+    return {
+        "app": app_info["name"] if app_info else "",
+        "focus": _element_key(focus) if focus else None,
+        "windows": frozenset(
+            (w["app"], w["title"]) for w in (windows or [])
+        ),
+        "elements": {
+            _element_key(el): {
+                "role": el.get("role", ""),
+                "label": el.get("label", ""),
+                "value": el.get("value", ""),
+                "enabled": el.get("enabled", True),
+            }
+            for el in elements
+        },
+    }
+
+
+def _compute_diff(old, new):
+    """Compare two snapshots and return a human-readable diff string."""
+    parts = []
+
+    # App changed?
+    if old["app"] != new["app"]:
+        parts.append(f'App changed: "{old["app"]}" → "{new["app"]}"')
+
+    # Focus changed?
+    if old["focus"] != new["focus"]:
+        if old["focus"]:
+            old_f = f'[{old["focus"][0]}] "{old["focus"][1]}"'
+        else:
+            old_f = "(none)"
+        if new["focus"]:
+            new_f = f'[{new["focus"][0]}] "{new["focus"][1]}"'
+        else:
+            new_f = "(none)"
+        parts.append(f"Focus moved: {old_f} → {new_f}")
+
+    # Windows added/removed
+    added_wins = new["windows"] - old["windows"]
+    removed_wins = old["windows"] - new["windows"]
+    for app, title in added_wins:
+        t = f' — "{title}"' if title else ""
+        parts.append(f"+ Window: {app}{t}")
+    for app, title in removed_wins:
+        t = f' — "{title}"' if title else ""
+        parts.append(f"- Window: {app}{t}")
+
+    # Elements added/removed/changed
+    old_keys = set(old["elements"].keys())
+    new_keys = set(new["elements"].keys())
+
+    added = new_keys - old_keys
+    removed = old_keys - new_keys
+
+    # Group by role for compact output
+    if added:
+        by_role = {}
+        for key in added:
+            role = key[0]
+            label = key[1] or "(unlabeled)"
+            by_role.setdefault(role, []).append(label)
+        for role, labels in sorted(by_role.items()):
+            if len(labels) <= 3:
+                parts.append(f"+ [{role}]: {', '.join(labels)}")
+            else:
+                parts.append(f"+ [{role}]: {len(labels)} new")
+
+    if removed:
+        by_role = {}
+        for key in removed:
+            role = key[0]
+            label = key[1] or "(unlabeled)"
+            by_role.setdefault(role, []).append(label)
+        for role, labels in sorted(by_role.items()):
+            if len(labels) <= 3:
+                parts.append(f"- [{role}]: {', '.join(labels)}")
+            else:
+                parts.append(f"- [{role}]: {len(labels)} gone")
+
+    # Values changed on existing elements
+    common = old_keys & new_keys
+    changed = []
+    for key in common:
+        old_el = old["elements"][key]
+        new_el = new["elements"][key]
+        if old_el != new_el:
+            diffs = []
+            if old_el.get("value") != new_el.get("value"):
+                diffs.append(f'value: "{old_el.get("value", "")}" → "{new_el.get("value", "")}"')
+            if old_el.get("enabled") != new_el.get("enabled"):
+                diffs.append(f'enabled: {old_el.get("enabled")} → {new_el.get("enabled")}')
+            if diffs:
+                label = key[1] or key[0]
+                changed.append(f'  [{key[0]}] "{label}": {", ".join(diffs)}')
+
+    if changed:
+        parts.append("Changed:")
+        parts.extend(changed[:10])
+        if len(changed) > 10:
+            parts.append(f"  ... and {len(changed) - 10} more")
+
+    if not parts:
+        return ""
+
+    header = f"Changes ({len(added)} new, {len(removed)} gone, {len(changed)} modified):"
+    return header + "\n" + "\n".join(parts)

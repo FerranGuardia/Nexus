@@ -25,8 +25,8 @@ nexus/
 
 | Tool | Purpose | Example |
 |------|---------|---------|
-| `see` | What's on screen (accessibility tree, windows, focus, screenshot) | `see()`, `see(query="Save")`, `see(screenshot=True)` |
-| `do` | Execute an intent | `do("click Save")`, `do("type hello in search")`, `do("open Safari")` |
+| `see` | What's on screen (accessibility tree, windows, focus, screenshot, diff) | `see()`, `see(query="Save")`, `see(diff=True)` |
+| `do` | Execute an intent (supports ordinals) | `do("click Save")`, `do("click the 2nd button")`, `do("open Safari")` |
 | `memory` | Persistent key-value store | `memory(op="set", key="x", value="y")` |
 
 ### `see` parameters
@@ -34,10 +34,12 @@ nexus/
 - `query` — search for specific elements instead of full tree
 - `screenshot` — include a base64 JPEG screenshot
 - `menus` — include the app's full menu bar (every command + shortcuts)
+- `diff` — compare with previous snapshot, show what changed
 
 ### `do` intents
 ```
 click <target>              click File > Save As        type <text>
+click the 2nd <role>        click the last button       click <role> 3
 type <text> in <target>     press cmd+s                 open <app>
 switch to <app>             scroll down/up              focus <target>
 close                       copy / paste / undo / redo  select all

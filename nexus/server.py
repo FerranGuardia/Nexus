@@ -35,6 +35,7 @@ def see(
     query: str | None = None,
     screenshot: bool = False,
     menus: bool = False,
+    diff: bool = False,
 ) -> str | list:
     """See what's on screen right now.
 
@@ -46,12 +47,13 @@ def see(
         query: Search for specific elements instead of full tree.
         screenshot: Include a screenshot (adds ~50KB, use sparingly).
         menus: Include the app's menu bar (shows all available commands + shortcuts).
+        diff: Compare with previous snapshot — show what changed since last see().
 
     Call this first to understand what the user sees.
     """
     from nexus.sense.fusion import see as _see
 
-    result = _see(app=app, query=query, screenshot=screenshot, menus=menus)
+    result = _see(app=app, query=query, screenshot=screenshot, menus=menus, diff=diff)
 
     # If screenshot requested, return multimodal content
     if result.get("image"):
