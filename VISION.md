@@ -67,7 +67,42 @@ Under the hood, Nexus routes through accessibility APIs, AppleScript, keyboard/m
 - `see()` auto-enriches with web page content when Chrome is focused
 - `do("navigate <url>")` and `do("js <expression>")` for direct web control
 
-## What's Next — The Roadmap
+## Known Issues & Hard Truths
+
+Honest assessment of where Nexus falls short, written so we can fix it.
+
+### 1. The "Why Not Just Use the CLI?" Problem
+Nexus automates GUI apps — but most power users (the exact audience who'd install an MCP server) already live in the terminal. The killer use case isn't clear yet. When does clicking buttons through accessibility APIs beat a shell command? Possible answers: testing GUI apps, automating apps with no CLI (Figma, Keynote), accessibility for users who can't use a mouse. But we haven't proven any of these compellingly.
+
+### 2. Electron Blindness
+VS Code — the #1 app for Nexus users — is an Electron app. Electron exposes roughly 5 accessibility elements: the window frame and a few chrome buttons. The actual editor content, tabs, sidebar, terminal — invisible to the AX tree. This is the single biggest gap. Workarounds exist (VS Code's built-in extension API, reading workspace files directly) but they're not integrated. Until this is solved, Nexus is blind in the app where it lives.
+
+### 3. Fragile Intent Parser
+`resolve.py` is a ~770-line chain of `if/elif` regex matches. It works for the exact phrasings we've coded, but:
+- "click on the Save button" works, "hit Save" doesn't
+- "type hello in search" works, "enter hello into search" doesn't
+- Typos, synonyms, and slight rephrasing silently fall through to the wrong handler or fail
+- Every new intent means another regex and another branch
+
+This needs to become either a proper grammar/parser, or lean on the LLM to normalize intents before they reach Nexus. The current approach doesn't scale.
+
+### 4. Zero Test Suite
+The v1 test suite was deleted during the v2 rewrite and never replaced. ~2500 LOC with zero automated tests. Every change is verified by manually running `python -c "..."` in the terminal. This is fine for a prototype; it's not fine for something that controls your computer. At minimum we need:
+- Unit tests for intent parsing (given this string, expect this action)
+- Mock-based tests for the AX layer (without needing real UI)
+- Integration smoke tests that verify see/do/memory round-trip
+
+### 5. CDP Requires Manual Setup
+Chrome DevTools Protocol only works if Chrome is launched with `--remote-debugging-port=9222`. No normal user does this. The current state: CDP features silently degrade to nothing for anyone who opens Chrome normally. We need to either auto-launch Chrome with the flag, detect and offer to restart it, or find an alternative (Chrome extensions, AppleScript bridge).
+
+### 6. Token Cost of `see()`
+A full `see()` call on Safari can return 200+ elements. That's a significant chunk of context window for the AI calling Nexus. The menu bar alone is 300-400 items. We do allow `query` filtering, but the default "show everything" mode is expensive. Smart truncation, pagination, or relevance-based filtering would help. The AI shouldn't need to see every element to find the one it wants.
+
+### 7. Locale Dependency
+macOS AXRoleDescription is localized — on a Spanish system, buttons are "botón", links are "enlace". The code uses AXRole (locale-independent) for matching, but user-facing output still shows localized strings. If someone writes `do("click the button")` on a Japanese system, fuzzy matching may struggle. This is partially handled but not robustly tested across locales.
+
+### 8. No Error Recovery
+When `do()` fails — element not found, wrong app focused, dialog dismissed unexpectedly — the response is a dict with `ok: False`. There's no retry logic, no "did you mean?", no suggestion of alternatives. The AI calling Nexus gets a failure and has to figure out what to do. Nexus should be smarter about helping recover from failures.
 
 ### 1. Self-Improving Memory
 The `memory` tool is currently a dumb key-value store.
@@ -120,8 +155,11 @@ If you're an AI continuing this work, here's what matters:
 - The `.venv` uses Python 3.12 via Homebrew at `/Users/ferran/repos/Nexus/.venv/`
 - Always test changes with: `source .venv/bin/activate && python3 -c "from nexus.sense.fusion import see; print(see()['text'])"`
 
+Read the "Known Issues & Hard Truths" section — that's where the real work is.
+
 The most impactful things you could build next:
-1. Self-improving memory (remember action patterns for better resolution)
-2. Spatial element references ("the button near search", "top-right corner")
-3. Deeper CDP — network interception, console capture, multi-tab
-4. Auto-launch Chrome with debugging port when CDP is needed
+1. Test suite for intent parsing — highest ROI, prevents regressions
+2. Electron/VS Code workaround — solve the blindness problem
+3. Intent normalization — make the parser less fragile
+4. Auto-launch Chrome with debugging port — remove CDP friction
+5. Smart tree truncation — reduce token cost of see()
