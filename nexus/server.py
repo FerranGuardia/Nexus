@@ -75,11 +75,16 @@ def see(
         "openWorldHint": True,
     }
 )
-def do(action: str) -> str:
+def do(action: str, app: str | None = None) -> str:
     """Execute an action on the computer.
 
     Verb-first intent format. Nexus finds the best way to execute it
     (accessibility actions, AppleScript, or keyboard/mouse).
+
+    Args:
+        action: Intent string like "click Save", "type hello in search".
+        app: Target app by name (default: frontmost). Use this to act on
+             background apps without switching focus.
 
     Supported intents:
         click <target>           - Find & click element by name
@@ -112,6 +117,12 @@ def do(action: str) -> str:
     from nexus.act.resolve import do as _do
     import time
 
+    # Resolve app name to PID
+    pid = None
+    if app:
+        from nexus.sense.fusion import _resolve_pid
+        pid = _resolve_pid(app)
+
     # Determine if this action mutates the screen (skip verification for getters)
     lower = action.strip().lower()
     is_getter = any(lower.startswith(g) for g in (
@@ -123,11 +134,11 @@ def do(action: str) -> str:
     if not is_getter:
         from nexus.sense.fusion import snap
         try:
-            before = snap()
+            before = snap(pid=pid)
         except Exception:
             before = None
 
-    result = _do(action)
+    result = _do(action, pid=pid)
 
     # Snapshot after + verify (brief pause lets UI update)
     changes = ""
@@ -135,7 +146,7 @@ def do(action: str) -> str:
         time.sleep(0.15)
         from nexus.sense.fusion import snap, verify
         try:
-            after = snap()
+            after = snap(pid=pid)
             changes = verify(before, after)
         except Exception:
             changes = ""

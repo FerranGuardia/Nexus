@@ -26,7 +26,7 @@ nexus/
 | Tool | Purpose | Example |
 |------|---------|---------|
 | `see` | What's on screen (accessibility tree, windows, focus, screenshot, diff) | `see()`, `see(query="Save")`, `see(diff=True)` |
-| `do` | Execute an intent (supports ordinals) | `do("click Save")`, `do("click the 2nd button")`, `do("open Safari")` |
+| `do` | Execute an intent (supports ordinals, app targeting) | `do("click Save")`, `do("click the 2nd button")`, `do("click OK", app="Safari")` |
 | `memory` | Persistent key-value store | `memory(op="set", key="x", value="y")` |
 
 ### `see` parameters
@@ -35,6 +35,10 @@ nexus/
 - `screenshot` — include a base64 JPEG screenshot
 - `menus` — include the app's full menu bar (every command + shortcuts)
 - `diff` — compare with previous snapshot, show what changed
+
+### `do` parameters
+- `action` — intent string like "click Save", "type hello in search"
+- `app` — target a specific app by name (default: frontmost). Lets you act on background apps without switching focus.
 
 ### `do` intents
 ```

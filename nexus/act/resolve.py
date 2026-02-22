@@ -124,11 +124,12 @@ KEY_ALIASES = {
 }
 
 
-def do(action):
+def do(action, pid=None):
     """Execute a natural-language intent.
 
     Args:
         action: Intent string like "click Save", "type hello in search".
+        pid: Target app PID (default: frontmost app).
 
     Returns:
         dict with action result.
@@ -190,19 +191,19 @@ def do(action):
 
     # Menu paths: "click File > Save" or "menu File > Save"
     if verb in ("click", "menu") and ">" in rest:
-        return native.click_menu(rest)
+        return native.click_menu(rest, pid=pid)
 
     if verb == "click":
-        return _handle_click(rest)
+        return _handle_click(rest, pid=pid)
 
     if verb in ("double-click", "doubleclick", "dblclick"):
-        return _handle_click(rest, double=True)
+        return _handle_click(rest, double=True, pid=pid)
 
     if verb in ("right-click", "rightclick", "rclick"):
-        return _handle_click(rest, right=True)
+        return _handle_click(rest, right=True, pid=pid)
 
     if verb == "type":
-        return _handle_type(rest)
+        return _handle_type(rest, pid=pid)
 
     if verb == "press":
         return _handle_press(rest)
@@ -220,7 +221,7 @@ def do(action):
         return _handle_scroll(rest)
 
     if verb == "focus":
-        return native.focus_element(rest)
+        return native.focus_element(rest, pid=pid)
 
     if verb == "drag":
         return _handle_drag(rest)
@@ -232,13 +233,13 @@ def do(action):
         return _handle_move(rest)
 
     if verb == "menu":
-        return native.click_menu(rest)
+        return native.click_menu(rest, pid=pid)
 
     if verb == "fill":
-        return _handle_fill(rest)
+        return _handle_fill(rest, pid=pid)
 
     if verb == "wait":
-        return _handle_wait(rest)
+        return _handle_wait(rest, pid=pid)
 
     if verb == "notify":
         return native.notify("Nexus", rest)
@@ -252,11 +253,11 @@ def do(action):
 
     # Unknown verb — check for menu path, then try as a click target
     if ">" in action:
-        return native.click_menu(action)
-    return _handle_click(action)
+        return native.click_menu(action, pid=pid)
+    return _handle_click(action, pid=pid)
 
 
-def _handle_click(target, double=False, right=False):
+def _handle_click(target, double=False, right=False, pid=None):
     """Handle click intents."""
     if not target:
         # Click at current mouse position
@@ -280,7 +281,7 @@ def _handle_click(target, double=False, right=False):
     # Check for ordinal reference: "the 2nd button", "3rd link", "last checkbox"
     ordinal = _parse_ordinal(target)
     if ordinal:
-        return _click_nth(ordinal, double=double, right=right)
+        return _click_nth(ordinal, double=double, right=right, pid=pid)
 
     # Parse optional role filter: "click button Save" or "click Save button"
     role = None
@@ -294,7 +295,7 @@ def _handle_click(target, double=False, right=False):
             role = parts[-1]
             target = " ".join(parts[:-1])
 
-    result = native.click_element(target, role=role)
+    result = native.click_element(target, pid=pid, role=role)
 
     # If native click worked but we need double/right click, use coordinates
     if result.get("ok") and (double or right):
@@ -308,11 +309,12 @@ def _handle_click(target, double=False, right=False):
     return result
 
 
-def _click_nth(ordinal_info, double=False, right=False):
+def _click_nth(ordinal_info, double=False, right=False, pid=None):
     """Click the nth element matching a role (and optional label).
 
     Args:
         ordinal_info: tuple (ordinal, role, label) from _parse_ordinal.
+        pid: Target app PID (default: frontmost app).
     """
     from nexus.sense.access import describe_app, ax_actions, ax_perform
 
@@ -327,7 +329,7 @@ def _click_nth(ordinal_info, double=False, right=False):
     }
     ax_role = ROLE_MAP.get(role)
 
-    elements = describe_app()
+    elements = describe_app(pid)
 
     # Filter by raw AXRole (locale-independent) — falls back to display role
     if ax_role:
@@ -403,7 +405,7 @@ def _click_nth(ordinal_info, double=False, right=False):
     return {"ok": False, "error": f'Found {role} #{n} but could not click it'}
 
 
-def _handle_type(rest):
+def _handle_type(rest, pid=None):
     """Handle type intents: 'type hello' or 'type hello in search'."""
     if not rest:
         return {"ok": False, "error": "Nothing to type"}
@@ -418,7 +420,7 @@ def _handle_type(rest):
         text = _strip_quotes(text)
 
         # Focus the target first, then type
-        return native.set_value(target, text)
+        return native.set_value(target, text, pid=pid)
 
     # Simple type: "type hello world"
     text = _strip_quotes(rest)
@@ -527,7 +529,7 @@ def _handle_move(rest):
         return {"ok": False, "error": f'Unknown direction: {direction}. Use: left, right, center, full'}
 
 
-def _handle_wait(rest):
+def _handle_wait(rest, pid=None):
     """Handle wait intents.
 
     Patterns:
@@ -563,20 +565,20 @@ def _handle_wait(rest):
     )
     if disappear_match:
         target = disappear_match.group(1).strip()
-        return _poll_for(target, appear=False)
+        return _poll_for(target, appear=False, pid=pid)
 
     # Wait for element: "wait for Save dialog", "wait for Save dialog 5s"
     for_match = re.match(r"for\s+(.+?)(?:\s+(\d+)s)?$", rest.strip(), re.IGNORECASE)
     if for_match:
         target = for_match.group(1).strip()
         timeout = int(for_match.group(2)) if for_match.group(2) else 10
-        return _poll_for(target, appear=True, timeout=timeout)
+        return _poll_for(target, appear=True, timeout=timeout, pid=pid)
 
     # Fallback: treat as "wait for <rest>"
-    return _poll_for(rest, appear=True)
+    return _poll_for(rest, appear=True, pid=pid)
 
 
-def _poll_for(target, appear=True, timeout=10, interval=0.5):
+def _poll_for(target, appear=True, timeout=10, interval=0.5, pid=None):
     """Poll until an element appears or disappears.
 
     Args:
@@ -584,6 +586,7 @@ def _poll_for(target, appear=True, timeout=10, interval=0.5):
         appear: If True, wait for it to appear. If False, wait for it to vanish.
         timeout: Max seconds to wait.
         interval: Seconds between polls.
+        pid: Target app PID (default: frontmost app).
 
     Returns:
         dict with result.
@@ -595,7 +598,7 @@ def _poll_for(target, appear=True, timeout=10, interval=0.5):
     polls = 0
 
     while time.time() < deadline:
-        matches = find_elements(target)
+        matches = find_elements(target, pid)
         found = len(matches) > 0
         polls += 1
 
@@ -630,7 +633,7 @@ def _poll_for(target, appear=True, timeout=10, interval=0.5):
     }
 
 
-def _handle_fill(rest):
+def _handle_fill(rest, pid=None):
     """Handle fill intents: 'fill Name=Ferran, Email=f@x.com'.
 
     Parses comma-separated key=value pairs, finds each field by label,
@@ -659,7 +662,7 @@ def _handle_fill(rest):
     errors = []
 
     for field_name, field_value in pairs:
-        result = native.set_value(field_name, field_value)
+        result = native.set_value(field_name, field_value, pid=pid)
         if result.get("ok"):
             results.append(f'{field_name} = "{field_value}"')
         else:
