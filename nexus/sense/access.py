@@ -24,6 +24,67 @@ from Quartz import (
 )
 
 
+# Known Electron bundle IDs — these need AXManualAccessibility
+_ELECTRON_BUNDLE_IDS = {
+    "com.microsoft.VSCode",
+    "com.microsoft.VSCodeInsiders",
+    "com.electron.",  # prefix match — catches generic Electron apps
+    "com.github.Electron",
+    "com.slack.Slack",
+    "com.spotify.client",
+    "com.discordapp.Discord",
+    "com.obsidian",
+    "com.hnc.Discord",
+    "com.figma.Desktop",
+    "com.notion.Notion",
+    "com.1password.1password",
+}
+
+# Track which PIDs we've already enabled AXManualAccessibility on
+_ax_manual_enabled = set()
+
+
+def _is_electron(bundle_id):
+    """Check if a bundle ID belongs to an Electron app."""
+    if not bundle_id:
+        return False
+    for eid in _ELECTRON_BUNDLE_IDS:
+        if bundle_id == eid or bundle_id.startswith(eid):
+            return True
+    return False
+
+
+def _ensure_electron_accessibility(pid):
+    """Enable AXManualAccessibility for Electron apps.
+
+    Tells Chromium to build the full native accessibility tree
+    without VoiceOver. Goes from ~5 elements to 200+ in VS Code.
+    Only sets once per PID per session (the flag persists until app quits).
+
+    On first enable, waits up to 2s for the tree to populate —
+    Chromium builds it asynchronously.
+    """
+    if pid in _ax_manual_enabled:
+        return
+
+    from CoreFoundation import kCFBooleanTrue
+    import time
+
+    app_ref = AXUIElementCreateApplication(pid)
+    err = AXUIElementSetAttributeValue(app_ref, "AXManualAccessibility", kCFBooleanTrue)
+    if err == kAXErrorSuccess:
+        _ax_manual_enabled.add(pid)
+        # Chromium builds the tree asynchronously — wait for it
+        # Typical time: 1-2 seconds. We poll to return as soon as ready.
+        window = ax_attr(app_ref, "AXFocusedWindow") or ax_attr(app_ref, "AXMainWindow")
+        if window:
+            for _ in range(8):  # 8 x 250ms = 2s max
+                time.sleep(0.25)
+                children = ax_attr(window, "AXChildren")
+                if children and len(children) > 4:
+                    break  # Tree is populating
+
+
 # Roles worth showing to the AI — interactive or meaningful
 INTERACTIVE_ROLES = {
     "AXButton", "AXTextField", "AXTextArea", "AXCheckBox",
@@ -185,6 +246,13 @@ def focused_element(pid=None):
         if not app:
             return None
         pid = app["pid"]
+    else:
+        app = None
+
+    # Enable Electron accessibility if needed
+    bundle_id = _bundle_id_for_pid(pid, app)
+    if _is_electron(bundle_id):
+        _ensure_electron_accessibility(pid)
 
     app_ref = AXUIElementCreateApplication(pid)
     el = ax_attr(app_ref, "AXFocusedUIElement")
@@ -269,12 +337,23 @@ def describe_app(pid=None, max_elements=150):
     Args:
         pid: Process ID (default: frontmost app).
         max_elements: Maximum elements to collect (default 150).
+
+    For Electron apps (VS Code, Slack, Discord, etc.), automatically
+    enables AXManualAccessibility to unlock the full tree (~5 → 200+ elements).
     """
     if pid is None:
         app = frontmost_app()
         if not app:
             return []
         pid = app["pid"]
+    else:
+        app = None
+
+    # Detect Electron apps and enable rich accessibility tree
+    bundle_id = _bundle_id_for_pid(pid, app)
+    is_electron = _is_electron(bundle_id)
+    if is_electron:
+        _ensure_electron_accessibility(pid)
 
     app_ref = AXUIElementCreateApplication(pid)
 
@@ -289,7 +368,9 @@ def describe_app(pid=None, max_elements=150):
     if not window:
         return []
 
-    return walk_tree(window, max_elements=max_elements)
+    # Electron apps nest content deep (VS Code: depth 14-20)
+    depth = 20 if is_electron else 8
+    return walk_tree(window, max_depth=depth, max_elements=max_elements)
 
 
 def find_elements(query, pid=None):
@@ -338,6 +419,17 @@ def window_title(pid=None):
 def app_ref_for_pid(pid):
     """Get AXUIElement ref for an app by PID."""
     return AXUIElementCreateApplication(pid)
+
+
+def _bundle_id_for_pid(pid, app_info=None):
+    """Get bundle ID for a PID. Uses cached app_info if available."""
+    if app_info and app_info.get("bundle_id"):
+        return app_info["bundle_id"]
+    # Look up from running apps
+    for a in running_apps():
+        if a["pid"] == pid:
+            return a.get("bundle_id", "")
+    return ""
 
 
 # ---------------------------------------------------------------------------

@@ -62,10 +62,17 @@ Under the hood, Nexus routes through accessibility APIs, AppleScript, keyboard/m
 - `see(diff=True)` — compares with previous snapshot, shows new/gone/changed elements
 - Action verification — `do()` auto-snapshots before/after and reports what changed
 
+### Electron App Support
+- Auto-detects Electron apps (VS Code, Slack, Discord, Figma, etc.)
+- Sets `AXManualAccessibility` to unlock full accessibility tree (~5 → 59+ elements)
+- Walks to depth 20 for Electron apps (content nests deep in Chromium DOM)
+- Sidebar tabs, toolbar buttons, status bar, panel toggles — all visible and clickable
+
 ### Browser Deep Integration
 - CDP integration via `nexus/sense/web.py` — connects to Chrome's debugging port
 - `see()` auto-enriches with web page content when Chrome is focused
 - `do("navigate <url>")` and `do("js <expression>")` for direct web control
+- `ensure_cdp()` auto-launches Chrome with debugging port if not running
 
 ## Known Issues & Hard Truths
 
@@ -74,8 +81,8 @@ Honest assessment of where Nexus falls short, written so we can fix it.
 ### 1. The "Why Not Just Use the CLI?" Problem
 Nexus automates GUI apps — but most power users (the exact audience who'd install an MCP server) already live in the terminal. The killer use case isn't clear yet. When does clicking buttons through accessibility APIs beat a shell command? Possible answers: testing GUI apps, automating apps with no CLI (Figma, Keynote), accessibility for users who can't use a mouse. But we haven't proven any of these compellingly.
 
-### 2. Electron Blindness
-VS Code — the #1 app for Nexus users — is an Electron app. Electron exposes roughly 5 accessibility elements: the window frame and a few chrome buttons. The actual editor content, tabs, sidebar, terminal — invisible to the AX tree. This is the single biggest gap. Workarounds exist (VS Code's built-in extension API, reading workspace files directly) but they're not integrated. Until this is solved, Nexus is blind in the app where it lives.
+### ~~2. Electron Blindness~~ → SOLVED
+~~VS Code gives ~5 elements~~ → **59+ elements** after enabling `AXManualAccessibility`. Nexus now auto-detects Electron apps (VS Code, Slack, Discord, Figma, etc.) and sets this attribute, which tells Chromium to build the full native accessibility tree. Sidebar tabs, toolbar buttons, status bar, panel toggles — all visible and clickable. The fix waits up to 2s for the tree to build (Chromium does it async) and walks to depth 20 (Electron nests content deep). See `access.py`: `_ensure_electron_accessibility()`. For even richer access, VS Code can be launched with `--remote-debugging-port=9222` for full CDP integration.
 
 ### 3. Fragile Intent Parser
 `resolve.py` is a ~770-line chain of `if/elif` regex matches. It works for the exact phrasings we've coded, but:
@@ -86,23 +93,20 @@ VS Code — the #1 app for Nexus users — is an Electron app. Electron exposes 
 
 This needs to become either a proper grammar/parser, or lean on the LLM to normalize intents before they reach Nexus. The current approach doesn't scale.
 
-### 4. Zero Test Suite
-The v1 test suite was deleted during the v2 rewrite and never replaced. ~2500 LOC with zero automated tests. Every change is verified by manually running `python -c "..."` in the terminal. This is fine for a prototype; it's not fine for something that controls your computer. At minimum we need:
-- Unit tests for intent parsing (given this string, expect this action)
-- Mock-based tests for the AX layer (without needing real UI)
-- Integration smoke tests that verify see/do/memory round-trip
+### ~~4. Zero Test Suite~~ → SOLVED
+264 tests for intent parsing in `tests/test_resolve.py`. Covers ordinal parsing, intent routing, keyboard handling, scroll/drag/tile/move/type, URL normalization. All mocked — no real UI needed. Still needed: integration smoke tests for see/do/memory round-trip.
 
-### 5. CDP Requires Manual Setup
-Chrome DevTools Protocol only works if Chrome is launched with `--remote-debugging-port=9222`. No normal user does this. The current state: CDP features silently degrade to nothing for anyone who opens Chrome normally. We need to either auto-launch Chrome with the flag, detect and offer to restart it, or find an alternative (Chrome extensions, AppleScript bridge).
+### ~~5. CDP Requires Manual Setup~~ → MOSTLY SOLVED
+`ensure_cdp()` auto-launches Chrome with `--remote-debugging-port=9222` if Chrome isn't running. If Chrome IS running without the flag, gives a clear restart message. Only auto-launches on explicit actions (navigate, js), not passive see(). Remaining: auto-detect and offer to restart Chrome.
 
-### 6. Token Cost of `see()`
-A full `see()` call on Safari can return 200+ elements. That's a significant chunk of context window for the AI calling Nexus. The menu bar alone is 300-400 items. We do allow `query` filtering, but the default "show everything" mode is expensive. Smart truncation, pagination, or relevance-based filtering would help. The AI shouldn't need to see every element to find the one it wants.
+### ~~6. Token Cost of `see()`~~ → SOLVED
+`see()` now caps at 80 elements (configurable), filters noise (unlabeled static text/images), and shows `... and N more (use query= to search)`. Menu bar capped to 150 items (depth ≤ 2).
 
 ### 7. Locale Dependency
 macOS AXRoleDescription is localized — on a Spanish system, buttons are "botón", links are "enlace". The code uses AXRole (locale-independent) for matching, but user-facing output still shows localized strings. If someone writes `do("click the button")` on a Japanese system, fuzzy matching may struggle. This is partially handled but not robustly tested across locales.
 
-### 8. No Error Recovery
-When `do()` fails — element not found, wrong app focused, dialog dismissed unexpectedly — the response is a dict with `ok: False`. There's no retry logic, no "did you mean?", no suggestion of alternatives. The AI calling Nexus gets a failure and has to figure out what to do. Nexus should be smarter about helping recover from failures.
+### ~~8. No Error Recovery~~ → PARTIALLY SOLVED
+Click failures now include fuzzy "Did you mean?" suggestions. Ordinal failures show role counts on screen. Both surfaced in do() output. Remaining: retry logic, "wrong app focused" detection.
 
 ### 1. Self-Improving Memory
 The `memory` tool is currently a dumb key-value store.
