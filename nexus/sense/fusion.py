@@ -174,6 +174,45 @@ def _app_info_for_pid(pid):
 
 
 # ---------------------------------------------------------------------------
+# Action verification — lightweight before/after snapshots
+# ---------------------------------------------------------------------------
+
+def snap(pid=None):
+    """Take a lightweight snapshot for before/after comparison.
+
+    Faster than see() — just grabs essentials for diffing.
+    Returns an opaque snapshot dict.
+    """
+    if pid is None:
+        app_info = access.frontmost_app()
+        if app_info:
+            pid = app_info["pid"]
+    else:
+        app_info = None
+
+    if app_info is None:
+        apps = access.running_apps()
+        app_info = next((a for a in apps if a["pid"] == pid), None)
+
+    focus = access.focused_element(pid)
+    elements = access.describe_app(pid)
+    wins = access.windows()
+
+    return _snapshot(elements, wins, focus, app_info)
+
+
+def verify(before, after):
+    """Compare before/after snapshots and return a compact change summary.
+
+    Returns a short string or empty string if nothing changed.
+    """
+    diff_text = _compute_diff(before, after)
+    if not diff_text:
+        return ""
+    return diff_text
+
+
+# ---------------------------------------------------------------------------
 # Diff / change detection
 # ---------------------------------------------------------------------------
 

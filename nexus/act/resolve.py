@@ -234,6 +234,9 @@ def do(action):
     if verb == "menu":
         return native.click_menu(rest)
 
+    if verb == "fill":
+        return _handle_fill(rest)
+
     if verb == "notify":
         return native.notify("Nexus", rest)
 
@@ -312,19 +315,22 @@ def _click_nth(ordinal_info, double=False, right=False):
 
     n, role, label = ordinal_info
 
-    # Map user-facing role names to AX role substrings
+    # Map user-facing role names to raw AXRole values (locale-independent)
     ROLE_MAP = {
-        "button": "button", "link": "link", "tab": "tab",
-        "menu": "menu", "field": "text", "checkbox": "checkbox",
-        "radio": "radio", "text": "static text", "image": "image",
-        "slider": "slider", "switch": "switch", "toggle": "switch",
+        "button": "AXButton", "link": "AXLink", "tab": "AXTab",
+        "menu": "AXMenuItem", "field": "AXTextField", "checkbox": "AXCheckBox",
+        "radio": "AXRadioButton", "text": "AXStaticText", "image": "AXImage",
+        "slider": "AXSlider", "switch": "AXSwitch", "toggle": "AXSwitch",
     }
-    role_match = ROLE_MAP.get(role, role)
+    ax_role = ROLE_MAP.get(role)
 
     elements = describe_app()
 
-    # Filter by role
-    matches = [el for el in elements if role_match in el.get("role", "").lower()]
+    # Filter by raw AXRole (locale-independent) — falls back to display role
+    if ax_role:
+        matches = [el for el in elements if el.get("_ax_role") == ax_role]
+    else:
+        matches = [el for el in elements if role in el.get("role", "").lower()]
 
     # Filter by label if provided
     if label:
@@ -516,6 +522,84 @@ def _handle_move(rest):
         return native.maximize_window(app_name)
     else:
         return {"ok": False, "error": f'Unknown direction: {direction}. Use: left, right, center, full'}
+
+
+def _handle_fill(rest):
+    """Handle fill intents: 'fill Name=Ferran, Email=f@x.com'.
+
+    Parses comma-separated key=value pairs, finds each field by label,
+    and sets its value. Reports per-field success/failure.
+
+    Also supports:
+        fill form Name=Ferran, Email=f@x.com  (leading "form" is stripped)
+    """
+    if not rest:
+        return {"ok": False, "error": 'Fill format: fill Name=value, Email=value'}
+
+    # Strip optional leading "form" or "in"
+    stripped = rest
+    for prefix in ("form ", "in "):
+        if stripped.lower().startswith(prefix):
+            stripped = stripped[len(prefix):]
+            break
+
+    # Parse key=value pairs (comma-separated)
+    pairs = _parse_fields(stripped)
+    if not pairs:
+        return {"ok": False, "error": f'Could not parse fields from: "{rest}"'}
+
+    import time
+    results = []
+    errors = []
+
+    for field_name, field_value in pairs:
+        result = native.set_value(field_name, field_value)
+        if result.get("ok"):
+            results.append(f'{field_name} = "{field_value}"')
+        else:
+            errors.append(f'{field_name}: {result.get("error", "failed")}')
+        time.sleep(0.1)  # Brief pause between fields for UI to settle
+
+    if errors:
+        return {
+            "ok": False,
+            "action": "fill",
+            "filled": results,
+            "errors": errors,
+            "error": f'Failed on {len(errors)} field(s): {", ".join(errors)}',
+        }
+
+    return {
+        "ok": True,
+        "action": "fill",
+        "filled": results,
+        "count": len(results),
+    }
+
+
+def _parse_fields(text):
+    """Parse 'Name=Ferran, Email=f@x.com' into [(key, value), ...].
+
+    Handles quoted values: Name="John Doe", Age=30
+    """
+    pairs = []
+    # Split on comma, but respect quotes
+    parts = re.split(r',\s*(?=[^"]*(?:"[^"]*"[^"]*)*$)', text)
+
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        eq = part.find("=")
+        if eq == -1:
+            continue
+        key = part[:eq].strip()
+        value = part[eq + 1:].strip()
+        value = _strip_quotes(value)
+        if key:
+            pairs.append((key, value))
+
+    return pairs
 
 
 def _strip_quotes(text):

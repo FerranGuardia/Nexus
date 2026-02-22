@@ -27,7 +27,17 @@ def click_element(name, pid=None, role=None):
 
     if role:
         role_lower = role.lower()
-        matches = [m for m in matches if role_lower in m.get("role", "").lower()]
+        # Match against both localized display role and raw AXRole
+        ax_map = {
+            "button": "AXButton", "link": "AXLink", "tab": "AXTab",
+            "menu": "AXMenuItem", "field": "AXTextField", "checkbox": "AXCheckBox",
+            "radio": "AXRadioButton", "text": "AXStaticText",
+        }
+        ax_target = ax_map.get(role_lower)
+        matches = [
+            m for m in matches
+            if m.get("_ax_role") == ax_target or role_lower in m.get("role", "").lower()
+        ]
 
     if not matches:
         # Give helpful feedback

@@ -84,8 +84,10 @@ def do(action: str) -> str:
     Supported intents:
         click <target>           - Find & click element by name
         click <File > Save>      - Click a menu item by path
+        click the 2nd <role>     - Click by ordinal (1st, 2nd, last...)
         type <text>              - Type into focused element
         type <text> in <target>  - Find a field, focus it, type
+        fill Name=x, Email=y    - Fill multiple fields at once
         press <keys>             - Keyboard shortcut (e.g. "press cmd+s")
         open <app>               - Launch an application
         switch to <app>          - Bring an app to front
@@ -101,12 +103,42 @@ def do(action: str) -> str:
         notify <message>         - macOS notification
         say <text>               - Speak aloud
 
+    Mutating actions automatically verify themselves — the response
+    includes what changed on screen after the action.
+
     Use `see` first to know what elements are available.
     Use `see(menus=true)` to discover what menu commands are available.
     """
     from nexus.act.resolve import do as _do
+    import time
+
+    # Determine if this action mutates the screen (skip verification for getters)
+    lower = action.strip().lower()
+    is_getter = any(lower.startswith(g) for g in (
+        "get ", "read ", "clipboard", "url", "tabs", "source", "selection",
+    ))
+
+    # Snapshot before (skip for read-only actions)
+    before = None
+    if not is_getter:
+        from nexus.sense.fusion import snap
+        try:
+            before = snap()
+        except Exception:
+            before = None
 
     result = _do(action)
+
+    # Snapshot after + verify (brief pause lets UI update)
+    changes = ""
+    if before is not None and result.get("ok"):
+        time.sleep(0.15)
+        from nexus.sense.fusion import snap, verify
+        try:
+            after = snap()
+            changes = verify(before, after)
+        except Exception:
+            changes = ""
 
     # Format as readable text
     if result.get("ok"):
@@ -127,6 +159,10 @@ def do(action: str) -> str:
             parts.append("Tabs: " + ", ".join(result["tabs"]))
         if result.get("paths"):
             parts.append("Selected: " + ", ".join(result["paths"]))
+        # Action verification — what changed?
+        if changes:
+            parts.append("")
+            parts.append(changes)
         return "\n".join(parts)
     else:
         parts = [f"Failed: {action}", f'  Error: {result.get("error", "unknown")}']

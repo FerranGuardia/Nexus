@@ -210,7 +210,7 @@ def _element_to_dict(el, focused=False):
     label = title or desc
     display_role = role_desc or role.replace("AX", "").lower()
 
-    node = {"role": display_role, "label": label}
+    node = {"role": display_role, "label": label, "_ax_role": role}
 
     if value is not None:
         val_str = str(value)
