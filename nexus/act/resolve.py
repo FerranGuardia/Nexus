@@ -354,9 +354,16 @@ def _click_nth(ordinal_info, double=False, right=False, pid=None):
             matches = labeled
 
     if not matches:
+        # Count elements by role for better feedback
+        role_counts = {}
+        for el in elements:
+            r = el.get("role", "?")
+            role_counts[r] = role_counts.get(r, 0) + 1
+        role_summary = [f"{count} {r}" for r, count in sorted(role_counts.items(), key=lambda x: -x[1])[:8]]
         return {
             "ok": False,
             "error": f'No {role}s found' + (f' matching "{label}"' if label else ''),
+            "found_roles": role_summary,
             "available": [f'{el["role"]}: {el.get("label", "")}' for el in elements[:15]],
         }
 
@@ -749,8 +756,9 @@ def _handle_navigate(rest):
         return {"ok": False, "error": "No URL specified"}
 
     try:
-        from nexus.sense.web import cdp_available, navigate
-        if cdp_available():
+        from nexus.sense.web import ensure_cdp, navigate
+        cdp = ensure_cdp()
+        if cdp["available"]:
             return navigate(url)
     except Exception:
         pass
@@ -768,9 +776,11 @@ def _handle_run_js(expression):
     expression = _strip_quotes(expression)
 
     try:
-        from nexus.sense.web import cdp_available, run_js
-        if not cdp_available():
-            return {"ok": False, "error": "CDP not available — launch Chrome with --remote-debugging-port=9222"}
+        from nexus.sense.web import ensure_cdp, run_js
+        cdp = ensure_cdp()
+        if not cdp["available"]:
+            msg = cdp.get("message", "CDP not available")
+            return {"ok": False, "error": msg}
         result = run_js(expression)
         if result.get("ok"):
             value = result.get("value")

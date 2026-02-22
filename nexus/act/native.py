@@ -40,13 +40,15 @@ def click_element(name, pid=None, role=None):
         ]
 
     if not matches:
-        # Give helpful feedback
+        # Give helpful feedback with fuzzy suggestions
         all_elements = describe_app(pid)
-        available = [e["label"] for e in all_elements if e.get("label")][:20]
+        available = [e["label"] for e in all_elements if e.get("label")]
+        suggestions = _suggest(name, available)
         return {
             "ok": False,
             "error": f'Element "{name}" not found',
-            "available": available,
+            "suggestions": suggestions,
+            "available": available[:15],
         }
 
     target = matches[0]
@@ -193,6 +195,56 @@ def run_applescript(script):
         return {"ok": False, "error": "AppleScript timeout (30s)"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+def _suggest(query, labels, n=3):
+    """Find the closest matching labels to a failed query.
+
+    Scores each label based on:
+      - Substring containment (bidirectional)
+      - Shared word overlap
+      - Length similarity as tiebreaker
+
+    Returns the top N most similar labels.
+    """
+    if not labels:
+        return []
+
+    query_lower = query.lower()
+    query_words = set(query_lower.split())
+
+    scored = []
+    for label in labels:
+        label_lower = label.lower()
+        score = 0
+
+        # Substring containment (bidirectional)
+        if query_lower in label_lower:
+            score += 3
+        elif label_lower in query_lower:
+            score += 2
+
+        # Shared word overlap
+        label_words = set(label_lower.split())
+        shared = query_words & label_words
+        if shared:
+            score += len(shared) * 2
+
+        # Partial word matches (prefix/suffix)
+        if score == 0:
+            for qw in query_words:
+                for lw in label_words:
+                    if lw.startswith(qw) or qw.startswith(lw):
+                        score += 1
+
+        if score > 0:
+            # Length similarity as tiebreaker (closer length = higher)
+            len_diff = abs(len(query) - len(label))
+            score += max(0, 1 - len_diff / 20)
+            scored.append((score, label))
+
+    scored.sort(key=lambda x: -x[0])
+    return [label for _, label in scored[:n]]
 
 
 def _clean(el):

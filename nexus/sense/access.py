@@ -263,8 +263,13 @@ def walk_tree(element, max_depth=8, depth=0, max_elements=150):
     return results[:max_elements]
 
 
-def describe_app(pid=None):
-    """Get the full accessibility tree of an app's focused window."""
+def describe_app(pid=None, max_elements=150):
+    """Get the full accessibility tree of an app's focused window.
+
+    Args:
+        pid: Process ID (default: frontmost app).
+        max_elements: Maximum elements to collect (default 150).
+    """
     if pid is None:
         app = frontmost_app()
         if not app:
@@ -284,7 +289,7 @@ def describe_app(pid=None):
     if not window:
         return []
 
-    return walk_tree(window)
+    return walk_tree(window, max_elements=max_elements)
 
 
 def find_elements(query, pid=None):

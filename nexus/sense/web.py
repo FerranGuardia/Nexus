@@ -33,6 +33,70 @@ def cdp_available():
         return False
 
 
+def ensure_cdp():
+    """Ensure CDP is available, auto-launching Chrome if needed.
+
+    Returns:
+        dict with 'available' (bool) and optionally 'message' (str).
+
+    Logic:
+        - If CDP already available → return available=True
+        - If Chrome is running but CDP is not → return available=False
+          with a message (can't force-restart, that's destructive)
+        - If Chrome is not running → launch with --remote-debugging-port=9222,
+          wait up to 3s for the port, return result
+    """
+    import subprocess
+    import time
+
+    # Already available — nothing to do
+    if cdp_available():
+        return {"available": True}
+
+    # Check if Chrome is already running
+    try:
+        result = subprocess.run(
+            ["pgrep", "-x", "Google Chrome"],
+            capture_output=True, timeout=2,
+        )
+        chrome_running = result.returncode == 0
+    except Exception:
+        chrome_running = False
+
+    if chrome_running:
+        # Chrome is running but CDP port is not open — user must restart
+        return {
+            "available": False,
+            "message": (
+                "Chrome is running but CDP is not available. "
+                "Quit Chrome and relaunch, or run: "
+                'open -a "Google Chrome" --args --remote-debugging-port=9222'
+            ),
+        }
+
+    # Chrome is not running — launch with the debugging flag
+    try:
+        subprocess.Popen(
+            ["open", "-a", "Google Chrome", "--args", "--remote-debugging-port=9222"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception as e:
+        return {"available": False, "message": f"Failed to launch Chrome: {e}"}
+
+    # Wait up to 3 seconds for the port to become available
+    deadline = time.time() + 3
+    while time.time() < deadline:
+        if cdp_available():
+            return {"available": True, "message": "Launched Chrome with CDP"}
+        time.sleep(0.3)
+
+    return {
+        "available": False,
+        "message": "Launched Chrome but CDP port did not become available within 3s",
+    }
+
+
 def _get_targets():
     """Get list of debuggable targets (tabs)."""
     try:

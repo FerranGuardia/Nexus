@@ -10,7 +10,7 @@ from nexus.sense import access, screen
 _last_snapshot = None
 
 
-def see(app=None, query=None, screenshot=False, menus=False, diff=False):
+def see(app=None, query=None, screenshot=False, menus=False, diff=False, max_elements=80):
     """Main perception function. Returns a text snapshot of the computer.
 
     Args:
@@ -19,6 +19,8 @@ def see(app=None, query=None, screenshot=False, menus=False, diff=False):
         screenshot: Include a base64 screenshot.
         menus: Include the app's menu bar items (shows available commands).
         diff: Compare with previous snapshot — show what changed.
+        max_elements: Max elements to display (default 80). Use query= to
+            search within large apps instead of raising this.
 
     Returns:
         dict with 'text' (always) and optionally 'image' (base64 JPEG).
@@ -63,29 +65,56 @@ def see(app=None, query=None, screenshot=False, menus=False, diff=False):
             title_part = f' — "{w["title"]}"' if w["title"] else ""
             result_parts.append(f'  {w["app"]}{title_part}')
 
-    # Menu bar (what commands are available)
+    # Menu bar (what commands are available) — capped to 150
+    max_menu_items = 150
     if menus:
         menu_items = access.menu_bar(pid)
         if menu_items:
-            result_parts.append("")
-            result_parts.append(f"Menus ({len(menu_items)} items):")
+            # Show top-level menus fully, submenus up to 2 levels deep
+            shown = []
             for item in menu_items:
+                if len(shown) >= max_menu_items:
+                    break
+                # depth 0 = top-level menu, depth 1 = submenu, depth 2 = sub-submenu
+                if item["depth"] <= 2:
+                    shown.append(item)
+
+            total = len(menu_items)
+            result_parts.append("")
+            result_parts.append(f"Menus ({total} items):")
+            for item in shown:
                 indent = "  " * (item["depth"] + 1)
                 shortcut = f' ({item["shortcut"]})' if item.get("shortcut") else ""
                 disabled = " (disabled)" if item.get("enabled") is False else ""
                 result_parts.append(f'{indent}{item["path"]}{shortcut}{disabled}')
+            remaining = total - len(shown)
+            if remaining > 0:
+                result_parts.append(f"  ... and {remaining} more menu items")
 
     # Elements (search or full tree)
     result_parts.append("")
     if query:
         elements = access.find_elements(query, pid)
         result_parts.append(f'Search "{query}" ({len(elements)} matches):')
+        # Show all search results unfiltered
+        for el in elements:
+            result_parts.append(f"  {_format_element(el)}")
     else:
-        elements = access.describe_app(pid)
-        result_parts.append(f"Elements ({len(elements)}):")
+        # Fetch up to 150 from the tree, then filter and cap for display
+        fetch_limit = max(max_elements * 2, 150)
+        elements = access.describe_app(pid, max_elements=fetch_limit)
 
-    for el in elements:
-        result_parts.append(f"  {_format_element(el)}")
+        # Filter out noise (unlabeled static text / images)
+        clean = [el for el in elements if not _is_noise_element(el)]
+
+        total = len(clean)
+        shown = clean[:max_elements]
+        result_parts.append(f"Elements ({total}):")
+        for el in shown:
+            result_parts.append(f"  {_format_element(el)}")
+        remaining = total - len(shown)
+        if remaining > 0:
+            result_parts.append(f"  ... and {remaining} more (use query= to search)")
 
     if not elements:
         result_parts.append("  (no elements found)")
@@ -121,6 +150,17 @@ def see(app=None, query=None, screenshot=False, menus=False, diff=False):
         result["image"] = image_data
 
     return result
+
+
+def _is_noise_element(el):
+    """Return True for unlabeled static text / images — they add no value for the AI."""
+    label = el.get("label", "")
+    role = el.get("_ax_role", "") or el.get("role", "")
+    if not label:
+        ax_role = role.replace("AX", "").lower() if role.startswith("AX") else role.lower()
+        if ax_role in ("statictext", "static text", "image"):
+            return True
+    return False
 
 
 def _format_element(el):

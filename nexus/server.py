@@ -50,6 +50,7 @@ def see(
         diff: Compare with previous snapshot — show what changed since last see().
 
     Call this first to understand what the user sees.
+    For apps with many elements, use query= to search instead of browsing the full tree.
     """
     from nexus.sense.fusion import see as _see
 
@@ -180,6 +181,10 @@ def do(action: str, app: str | None = None) -> str:
         return "\n".join(parts)
     else:
         parts = [f"Failed: {action}", f'  Error: {result.get("error", "unknown")}']
+        if result.get("suggestions"):
+            parts.append(f"  Did you mean: {', '.join(result['suggestions'])}")
+        if result.get("found_roles"):
+            parts.append(f"  On screen: {', '.join(result['found_roles'])}")
         if result.get("available"):
             parts.append(f"  Available: {', '.join(result['available'][:10])}")
         return "\n".join(parts)
