@@ -50,44 +50,26 @@ Under the hood, Nexus routes through accessibility APIs, AppleScript, keyboard/m
 - Survives across sessions, conversations, and restarts
 - Simple CRUD: set, get, list, delete, clear
 
-## What's Next — The Roadmap I Care About
+## What's Been Built Since v2.0
 
-### 1. Smarter Intent Resolution
-The `do` tool currently uses keyword matching. It works for "click Save" but fails for:
-- "Click the third link on the page" (ordinal references)
-- "Select everything in the table" (contextual scope)
-- "Move the download folder to the desktop" (Finder operations)
-- "Reply to the last email" (app-specific workflows)
+### Smarter Intent Resolution
+- Ordinal references: `do("click the 2nd button")`, `do("last checkbox")`, `do("link 3")`
+- Form filling: `do("fill Name=Ferran, Email=f@x.com")`
+- Wait conditions: `do("wait for Save dialog")`, `do("wait 2s")`, `do("wait until X disappears")`
+- App targeting: `do("click OK", app="Safari")` — acts on background apps without focus switch
 
-The intent resolver should understand ordinals, spatial references, and app context.
-It shouldn't need an LLM — the AI calling Nexus IS the LLM. But it needs better parsing.
+### Change Detection
+- `see(diff=True)` — compares with previous snapshot, shows new/gone/changed elements
+- Action verification — `do()` auto-snapshots before/after and reports what changed
 
-### 2. Workflow Chains
-Right now each `do` call is independent. But real tasks are chains:
-- "Fill out this form" = see fields → type in each → click submit
-- "Download this PDF" = click link → wait → check Downloads
+### Browser Deep Integration
+- CDP integration via `nexus/sense/web.py` — connects to Chrome's debugging port
+- `see()` auto-enriches with web page content when Chrome is focused
+- `do("navigate <url>")` and `do("js <expression>")` for direct web control
 
-Nexus should support `do("fill form", fields={"name": "Ferran", "email": "..."})` — multi-step intents that Nexus executes as a sequence, verifying each step.
+## What's Next — The Roadmap
 
-### 3. Change Detection
-After `do("click Save")`, what changed? Did a dialog appear? Did the button disappear?
-A `see(diff=True)` that compares before/after would let the AI verify its actions worked.
-
-### 4. Browser Deep Integration
-Safari's accessibility tree is good but not great for web content.
-Chrome DevTools Protocol (CDP) gives richer access to web pages — DOM, network, console.
-Adding CDP as a perception source (activated when Chrome/Safari is focused) would make
-web automation much more powerful without adding new tools.
-
-### 5. Cross-Platform
-The architecture is deliberately layered:
-- `sense/fusion.py` and `act/resolve.py` are platform-agnostic
-- `sense/access.py` and `act/native.py` are macOS-specific
-
-A Linux backend (AT-SPI) or Windows backend (UIA) could slot in without changing
-the three-tool interface. The AI doesn't care which OS it's on.
-
-### 6. Self-Improving Memory
+### 1. Self-Improving Memory
 The `memory` tool is currently a dumb key-value store.
 What if Nexus remembered successful action patterns?
 - "Last time we clicked Save in TextEdit, it triggered a file dialog"
@@ -96,6 +78,27 @@ What if Nexus remembered successful action patterns?
 
 Memory that makes Nexus better at resolving intents over time.
 
+### 2. Spatial & Contextual References
+The intent resolver understands ordinals but not spatial references:
+- "Click the button near the search field" (proximity)
+- "Select everything in the table" (contextual scope)
+- "The X button in the top-right corner" (position)
+
+### 3. Cross-Platform
+The architecture is deliberately layered:
+- `sense/fusion.py` and `act/resolve.py` are platform-agnostic
+- `sense/access.py` and `act/native.py` are macOS-specific
+
+A Linux backend (AT-SPI) or Windows backend (UIA) could slot in without changing
+the three-tool interface. The AI doesn't care which OS it's on.
+
+### 4. Deeper Web Integration
+CDP gives us page content and JS execution. Next steps:
+- Auto-launch Chrome with debugging port when needed
+- Network request interception (watch API calls)
+- Console log capture (catch errors)
+- Multi-tab management (switch tabs, open new ones)
+
 ## Design Principles (Non-Negotiable)
 
 1. **Three tools.** Adding a fourth should require extraordinary justification.
@@ -103,14 +106,14 @@ Memory that makes Nexus better at resolving intents over time.
 3. **Token efficiency.** Text output, not JSON. Compact, not verbose.
 4. **Intent over implementation.** The AI says what, Nexus figures out how.
 5. **Fail helpfully.** When `do` can't find an element, show what IS available.
-6. **No unnecessary deps.** pyobjc + pyautogui + pillow + mcp. That's it.
+6. **Minimal deps.** pyobjc + pyautogui + pillow + mcp + websocket-client. That's it.
 
 ## For Future Agents
 
 If you're an AI continuing this work, here's what matters:
 
 - Read `CLAUDE.md` for the architecture and how to run things
-- The codebase is small (~1000 LOC across 10 files). Read all of it
+- The codebase is small (~2500 LOC across 11 files). Read all of it
 - Test with real apps: Safari has the richest accessibility tree, Finder is good too
 - VS Code (Electron) has a shallow accessibility tree — that's an Electron limitation, not ours
 - macOS accessibility permission must be granted to the parent app (Terminal, VS Code, etc.)
@@ -118,7 +121,7 @@ If you're an AI continuing this work, here's what matters:
 - Always test changes with: `source .venv/bin/activate && python3 -c "from nexus.sense.fusion import see; print(see()['text'])"`
 
 The most impactful things you could build next:
-1. Ordinal references in `do` ("click the 2nd button")
-2. `see(diff=True)` for change detection
-3. CDP integration for richer web perception
-4. Workflow chains in `do`
+1. Self-improving memory (remember action patterns for better resolution)
+2. Spatial element references ("the button near search", "top-right corner")
+3. Deeper CDP — network interception, console capture, multi-tab
+4. Auto-launch Chrome with debugging port when CDP is needed
