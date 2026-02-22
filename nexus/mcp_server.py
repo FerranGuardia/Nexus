@@ -229,6 +229,23 @@ def web_measure(selectors: str, tab: int = 0, port: int = 9222) -> str:
 
 
 @mcp.tool(annotations=READ_ONLY)
+def web_contrast(selectors: str = "", tab: int = 0, port: int = 9222) -> str:
+    """[CDP] Scan page elements for color contrast and readability issues.
+
+    Walks up the DOM to find effective background, computes luminance delta,
+    flags elements as critical (delta < 40), warning (delta < 80), or ok.
+    With no selectors, scans common UI elements (buttons, links, nav, tables, forms).
+
+    Args:
+        selectors: Optional comma-separated CSS selectors. Empty = scan defaults.
+        tab: Target tab index.
+        port: CDP port.
+    """
+    from nexus.oculus.web import web_contrast as _web_contrast
+    return _json(_web_contrast(selectors=selectors, tab=tab, port=port))
+
+
+@mcp.tool(annotations=READ_ONLY)
 def web_markdown(tab: int = 0, port: int = 9222) -> str:
     """[CDP] Extract clean article content from page using Readability.js.
 

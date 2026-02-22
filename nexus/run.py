@@ -70,7 +70,7 @@ def _build_commands():
     from nexus.oculus.uia import describe, windows, find, focused
     from nexus.oculus.web import (
         web_describe, web_text, web_find, web_links, web_tabs,
-        web_ax, web_measure, web_markdown, web_capture_api, web_research,
+        web_ax, web_measure, web_contrast, web_markdown, web_capture_api, web_research,
     )
     from nexus.oculus.ocr import ocr_region, ocr_screen
     from nexus.digitus.input import (
@@ -101,6 +101,7 @@ def _build_commands():
         "web-tabs":     (web_tabs,      lambda a: {"port": _port(a)}),
         "web-ax":       (web_ax,        lambda a: {"tab": getattr(a, "tab", 0), "port": _port(a), "focus": getattr(a, "focus", None), "match": getattr(a, "match", None)}),
         "web-measure":  (web_measure,   lambda a: {"selectors": a.selectors, "tab": getattr(a, "tab", 0), "port": _port(a)}),
+        "web-contrast": (web_contrast,  lambda a: {"selectors": getattr(a, "selectors", "") or "", "tab": getattr(a, "tab", 0), "port": _port(a)}),
         "web-markdown": (web_markdown,  lambda a: {"tab": getattr(a, "tab", 0), "port": _port(a)}),
         "web-capture-api": (web_capture_api, lambda a: {"url": a.url, "filter_pattern": a.filter or "", "tab": getattr(a, "tab", 0), "port": _port(a)}),
         "web-research": (web_research,  lambda a: {"query": a.query, "max_results": a.max, "engine": a.engine, "port": _port(a)}),
@@ -168,6 +169,7 @@ def _build_daemon_commands():
         "web-tabs":     lambda d: {"port": _port(d)},
         "web-ax":       lambda d: {"tab": d.get("tab", 0), "port": _port(d), "focus": d.get("focus"), "match": d.get("match")},
         "web-measure":  lambda d: {"selectors": d["selectors"], "tab": d.get("tab", 0), "port": _port(d)},
+        "web-contrast": lambda d: {"selectors": d.get("selectors", ""), "tab": d.get("tab", 0), "port": _port(d)},
         "web-markdown": lambda d: {"tab": d.get("tab", 0), "port": _port(d)},
         "web-capture-api": lambda d: {"url": d["url"], "filter_pattern": d.get("filter", ""), "tab": d.get("tab", 0), "port": _port(d)},
         "web-research": lambda d: {"query": d["query"], "max_results": d.get("max", 3), "engine": d.get("engine", "duckduckgo"), "port": _port(d)},
@@ -283,6 +285,8 @@ def _build_parser():
                    help="Return only a concise summary")
     p = _web("web-measure", help="Computed CSS layout for selectors")
     p.add_argument("selectors", help="Comma-separated CSS selectors")
+    p = _web("web-contrast", help="Scan elements for color contrast / readability issues")
+    p.add_argument("selectors", nargs="?", default="", help="Comma-separated CSS selectors (empty = scan common UI elements)")
     _web("web-markdown", help="Extract clean article content (Readability.js)")
     p = _web("web-research", help="Search web, visit results, extract content")
     p.add_argument("query", help="Search query")

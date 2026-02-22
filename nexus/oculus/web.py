@@ -262,6 +262,112 @@ def web_measure(selectors: str, tab: int = 0, port: int = 9222) -> dict:
         return {"command": "web-measure", "url": page.url, "elements": results}
 
 
+_CONTRAST_DEFAULT_SELECTORS = [
+    ".dropdown-menu", ".dropdown-menu > li > a",
+    ".dropdown-submenu .dropdown-menu > li > a",
+    ".navbar-inner", ".navbar .nav > li > a", ".navbar .brand",
+    ".btn", ".btn-primary", ".btn-danger", ".btn-info", ".btn-success", ".btn-warning",
+    "a", "label", "h1", "h2", "h3", "h4",
+    ".well", ".alert", ".breadcrumb",
+    "table th", "table td",
+    ".label", ".badge",
+    "#footer", "#footer a", "#footer small",
+    "input[type=text]", "select", "textarea",
+    ".help-inline", ".help-block", ".muted", "small",
+    ".nav-tabs > li > a", ".nav-tabs > .active > a",
+    ".modal-header", ".modal-body", ".modal-footer",
+    ".form-actions", ".page-header", ".hero-unit",
+    ".input-append .add-on", ".input-prepend .add-on",
+    ".tab-content", ".control-group label",
+    ".pagination a", ".pager a",
+]
+
+
+def web_contrast(selectors: str = "", tab: int = 0, port: int = 9222) -> dict:
+    """Scan page elements for color contrast / readability issues.
+
+    Walks up the DOM to find effective background, computes luminance delta,
+    and flags elements as critical (delta < 40) or warning (delta < 80).
+    With no selectors arg, scans a broad set of common UI selectors.
+
+    Args:
+        selectors: Optional comma-separated CSS selectors. Empty = scan defaults.
+        tab: Target tab index (0 = first tab).
+        port: CDP port (default 9222).
+    """
+    with cdp_page(_cdp_url(port)) as page:
+        selector_list = (
+            [s.strip() for s in selectors.split(",") if s.strip()]
+            if selectors
+            else _CONTRAST_DEFAULT_SELECTORS
+        )
+        results = page.evaluate("""(selectors) => {
+            function effectiveBg(el) {
+                let cur = el;
+                while (cur) {
+                    const bg = getComputedStyle(cur).backgroundColor;
+                    if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent')
+                        return bg;
+                    cur = cur.parentElement;
+                }
+                return 'rgb(255, 255, 255)';
+            }
+            function parseRgb(str) {
+                const m = str.match(/rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)/);
+                return m ? [+m[1], +m[2], +m[3]] : null;
+            }
+            function luminance(rgb) {
+                return 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2];
+            }
+            return selectors.map(sel => {
+                const els = document.querySelectorAll(sel);
+                if (!els.length) return null;
+                const el = els[0];
+                const s = getComputedStyle(el);
+                const bg = effectiveBg(el);
+                const bgRgb = parseRgb(bg);
+                const cRgb = parseRgb(s.color);
+                let contrast = -1;
+                let flag = 'ok';
+                if (bgRgb && cRgb) {
+                    const diff = Math.abs(luminance(bgRgb) - luminance(cRgb));
+                    contrast = Math.round(diff);
+                    if (diff < 40) flag = 'critical';
+                    else if (diff < 80) flag = 'warning';
+                }
+                return {
+                    selector: sel,
+                    count: els.length,
+                    color: s.color,
+                    bg: bg,
+                    contrast: contrast,
+                    fontSize: s.fontSize,
+                    fontWeight: s.fontWeight,
+                    flag: flag,
+                };
+            }).filter(Boolean);
+        }""", selector_list)
+
+        critical = [r for r in results if r["flag"] == "critical"]
+        warning = [r for r in results if r["flag"] == "warning"]
+        ok = [r for r in results if r["flag"] == "ok"]
+
+        return {
+            "command": "web-contrast",
+            "url": page.url,
+            "title": page.title(),
+            "summary": {
+                "critical": len(critical),
+                "warning": len(warning),
+                "ok": len(ok),
+                "total": len(results),
+            },
+            "critical": critical,
+            "warning": warning,
+            "ok": ok,
+        }
+
+
 def web_markdown(tab: int = 0, port: int = 9222) -> dict:
     """Extract clean article content using Mozilla Readability.js."""
     with cdp_page(_cdp_url(port)) as page:

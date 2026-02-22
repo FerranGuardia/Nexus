@@ -27,6 +27,7 @@ TOOL_DESCRIPTIONS = {
     "web-tabs": "[CDP] List all open browser tabs with titles and URLs. Use to find which tab to target with the tab parameter.",
     "web-ax": "[CDP] Chrome accessibility tree via CDP. More reliable than web_describe for SPAs and dynamic pages — returns the semantic structure that screen readers see (roles, names, states like checked/expanded/focused/disabled). Use focus param to filter by type.",
     "web-measure": "[CDP] Get exact computed CSS dimensions, padding, and margins for elements by CSS selector. Returns pixel-precise measurements. Use for layout debugging — not for finding elements (use web_find or web_ax for that).",
+    "web-contrast": "[CDP] Scan page elements for color contrast and readability issues. Walks up the DOM to find effective background color, computes luminance delta, and flags elements as critical (delta < 40), warning (delta < 80), or ok. With no selectors, scans common UI elements (buttons, links, nav, tables, forms, badges, footer). Use after CSS changes to verify readability.",
     "web-markdown": "[CDP] Extract clean article content from page using Readability.js. Strips navigation, ads, footers — returns just the main content as markdown. Great for reading documentation or articles.",
     "web-capture-api": "[CDP] Navigate to URL and capture all JSON API responses during page load. Use for SPAs that load data via fetch — the API JSON is cleaner than the DOM. Set filter_pattern to match specific API endpoints.",
     "web-research": "[CDP] Search the web, visit top results, and extract content autonomously. Use for research tasks that need multiple sources. Returns extracted content from each result page.",
@@ -86,6 +87,7 @@ TOOL_ANNOTATIONS = {
     "web-tabs": (True, False, True),
     "web-ax": (True, False, True),
     "web-measure": (True, False, True),
+    "web-contrast": (True, False, True),
     "web-markdown": (True, False, True),
     "web-capture-api": (False, False, False),  # navigates, side effect
     "web-research": (False, False, False),  # navigates, side effect
@@ -132,7 +134,7 @@ TOOL_CATEGORIES = {
     "UIA Awareness (Native Apps)": ["describe", "windows", "find", "focused"],
     "Web Awareness (Chrome/CDP)": [
         "web-describe", "web-text", "web-find", "web-links", "web-tabs",
-        "web-ax", "web-measure", "web-markdown", "web-capture-api", "web-research",
+        "web-ax", "web-measure", "web-contrast", "web-markdown", "web-capture-api", "web-research",
     ],
     "OCR": ["ocr-region", "ocr-screen"],
     "Screen Input": ["screenshot", "click", "move", "drag", "type", "key", "scroll", "info"],
