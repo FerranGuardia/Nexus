@@ -237,6 +237,9 @@ def do(action):
     if verb == "fill":
         return _handle_fill(rest)
 
+    if verb == "wait":
+        return _handle_wait(rest)
+
     if verb == "notify":
         return native.notify("Nexus", rest)
 
@@ -522,6 +525,109 @@ def _handle_move(rest):
         return native.maximize_window(app_name)
     else:
         return {"ok": False, "error": f'Unknown direction: {direction}. Use: left, right, center, full'}
+
+
+def _handle_wait(rest):
+    """Handle wait intents.
+
+    Patterns:
+        wait for <target>                — poll until element appears (10s timeout)
+        wait for <target> <N>s           — poll with custom timeout
+        wait until <target> disappears   — poll until element is gone
+        wait <N>                         — sleep N seconds
+        wait <N>s                        — sleep N seconds
+    """
+    import time
+    from nexus.sense.access import find_elements
+
+    if not rest:
+        return {"ok": False, "error": "Wait for what? E.g.: wait for Save dialog, wait 2s"}
+
+    lower = rest.lower().strip()
+
+    # Simple delay: "wait 2", "wait 2s", "wait 2 seconds", "wait 500ms"
+    delay_match = re.match(r"^(\d+(?:\.\d+)?)\s*(s|seconds?|ms)?$", lower)
+    if delay_match:
+        amount = float(delay_match.group(1))
+        unit = delay_match.group(2) or "s"
+        if unit == "ms":
+            amount /= 1000
+        amount = min(amount, 30)  # Cap at 30 seconds
+        time.sleep(amount)
+        return {"ok": True, "action": "wait", "seconds": amount}
+
+    # Wait until disappears: "wait until Save disappears"
+    disappear_match = re.match(
+        r"until\s+(.+?)\s+(?:disappears?|goes?\s+away|is\s+gone|vanishes?)$",
+        lower,
+    )
+    if disappear_match:
+        target = disappear_match.group(1).strip()
+        return _poll_for(target, appear=False)
+
+    # Wait for element: "wait for Save dialog", "wait for Save dialog 5s"
+    for_match = re.match(r"for\s+(.+?)(?:\s+(\d+)s)?$", rest.strip(), re.IGNORECASE)
+    if for_match:
+        target = for_match.group(1).strip()
+        timeout = int(for_match.group(2)) if for_match.group(2) else 10
+        return _poll_for(target, appear=True, timeout=timeout)
+
+    # Fallback: treat as "wait for <rest>"
+    return _poll_for(rest, appear=True)
+
+
+def _poll_for(target, appear=True, timeout=10, interval=0.5):
+    """Poll until an element appears or disappears.
+
+    Args:
+        target: Element label/text to search for.
+        appear: If True, wait for it to appear. If False, wait for it to vanish.
+        timeout: Max seconds to wait.
+        interval: Seconds between polls.
+
+    Returns:
+        dict with result.
+    """
+    import time
+    from nexus.sense.access import find_elements
+
+    deadline = time.time() + min(timeout, 30)
+    polls = 0
+
+    while time.time() < deadline:
+        matches = find_elements(target)
+        found = len(matches) > 0
+        polls += 1
+
+        if appear and found:
+            el = matches[0]
+            clean = {k: v for k, v in el.items() if not k.startswith("_")}
+            return {
+                "ok": True,
+                "action": "wait_found",
+                "element": clean,
+                "polls": polls,
+                "waited": round(polls * interval, 1),
+            }
+
+        if not appear and not found:
+            return {
+                "ok": True,
+                "action": "wait_gone",
+                "target": target,
+                "polls": polls,
+                "waited": round(polls * interval, 1),
+            }
+
+        time.sleep(interval)
+
+    # Timeout
+    verb = "appear" if appear else "disappear"
+    return {
+        "ok": False,
+        "error": f'Timeout ({timeout}s): "{target}" did not {verb}',
+        "polls": polls,
+    }
 
 
 def _handle_fill(rest):

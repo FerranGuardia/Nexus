@@ -42,6 +42,7 @@ click <target>              click File > Save As        type <text>
 click the 2nd <role>        click the last button       click <role> 3
 type <text> in <target>     press cmd+s                 open <app>
 fill Name=value, Email=val  fill form Name=x, Age=y     (multi-field)
+wait for <element>          wait 2s                     wait until X disappears
 switch to <app>             scroll down/up              focus <target>
 close                       copy / paste / undo / redo  select all
 get clipboard               get url                     get tabs
