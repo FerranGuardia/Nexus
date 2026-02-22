@@ -12,6 +12,7 @@ nexus/
   sense/                # PERCEPTION
     access.py           # macOS accessibility tree (AXUIElement via pyobjc)
     screen.py           # Screenshots (Quartz/CoreGraphics)
+    web.py              # Chrome DevTools Protocol (CDP) — web page content
     fusion.py           # Unified see() — merges all senses
   act/                  # ACTION
     resolve.py          # Intent parsing: "click Save" → best action
@@ -48,6 +49,7 @@ type <text> in <target>     press cmd+s                 open <app>
 fill Name=value, Email=val  fill form Name=x, Age=y     (multi-field)
 wait for <element>          wait 2s                     wait until X disappears
 switch to <app>             scroll down/up              focus <target>
+navigate <url>              js <expression>             (Chrome CDP)
 close                       copy / paste / undo / redo  select all
 get clipboard               get url                     get tabs
 tile <app> and <app>        move window left/right      maximize
@@ -86,9 +88,17 @@ Uses venv at `.venv/` (Python 3.12 via Homebrew):
 source /Users/ferran/repos/Nexus/.venv/bin/activate
 ```
 
+## Chrome CDP (Web Perception)
+
+When Chrome is running with `--remote-debugging-port=9222`, `see()` automatically
+enriches output with web page content (DOM, forms, links, buttons) and `do()` gains
+`navigate <url>` and `js <expression>` intents.
+
+Launch Chrome with CDP: `open -a "Google Chrome" --args --remote-debugging-port=9222`
+
 ## Key Deps
 
-pyobjc (ApplicationServices, Quartz, Cocoa), pyautogui, pillow, mcp (FastMCP)
+pyobjc (ApplicationServices, Quartz, Cocoa), pyautogui, pillow, mcp (FastMCP), websocket-client
 
 ## Accessibility Permission
 

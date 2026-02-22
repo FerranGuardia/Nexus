@@ -11,6 +11,7 @@ dependencies = [
     "pyautogui>=0.9.54",
     "pillow>=10.0",
     "mcp>=1.0",
+    "websocket-client>=1.6",
 ]
 
 [project.optional-dependencies]

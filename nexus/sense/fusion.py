@@ -90,6 +90,13 @@ def see(app=None, query=None, screenshot=False, menus=False, diff=False):
     if not elements:
         result_parts.append("  (no elements found)")
 
+    # CDP web content — enrich when Chrome is active
+    if app_info and _is_browser(app_info.get("name", "")):
+        web_text = _web_content()
+        if web_text:
+            result_parts.append("")
+            result_parts.append(web_text)
+
     # Diff mode — compare with previous snapshot
     current_snapshot = _snapshot(elements, wins, focus, app_info)
     if diff and _last_snapshot is not None:
@@ -330,3 +337,29 @@ def _compute_diff(old, new):
 
     header = f"Changes ({len(added)} new, {len(removed)} gone, {len(changed)} modified):"
     return header + "\n" + "\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# CDP web content integration
+# ---------------------------------------------------------------------------
+
+_BROWSER_NAMES = {"google chrome", "chrome", "chromium"}
+
+
+def _is_browser(name):
+    """Check if the app name is a CDP-capable browser."""
+    return name.lower() in _BROWSER_NAMES
+
+
+def _web_content():
+    """Get web page content via CDP (if available). Returns text or None."""
+    try:
+        from nexus.sense.web import cdp_available, page_content
+        if not cdp_available():
+            return None
+        content = page_content()
+        if content:
+            return f"--- Web Page (via CDP) ---\n{content}"
+    except Exception:
+        pass
+    return None

@@ -247,6 +247,15 @@ def do(action, pid=None):
     if verb == "say":
         return native.say(rest)
 
+    if verb in ("navigate", "goto", "go"):
+        return _handle_navigate(rest)
+
+    if verb in ("run", "eval", "execute") and rest.lower().startswith("js "):
+        return _handle_run_js(rest[3:])
+
+    if verb == "js":
+        return _handle_run_js(rest)
+
     if verb in ("set", "write") and rest.lower().startswith("clipboard "):
         text = rest[10:]  # after "clipboard "
         return native.clipboard_write(_strip_quotes(text))
@@ -717,3 +726,59 @@ def _strip_quotes(text):
         if (text[0] == '"' and text[-1] == '"') or (text[0] == "'" and text[-1] == "'"):
             return text[1:-1]
     return text
+
+
+# ---------------------------------------------------------------------------
+# CDP actions — browser navigation, JS execution
+# ---------------------------------------------------------------------------
+
+def _handle_navigate(rest):
+    """Handle: navigate to https://..., goto google.com."""
+    url = rest.strip()
+    # Strip optional "to"
+    if url.lower().startswith("to "):
+        url = url[3:].strip()
+
+    url = _strip_quotes(url)
+
+    # Add https:// if no scheme
+    if url and not url.startswith(("http://", "https://", "file://")):
+        url = "https://" + url
+
+    if not url:
+        return {"ok": False, "error": "No URL specified"}
+
+    try:
+        from nexus.sense.web import cdp_available, navigate
+        if cdp_available():
+            return navigate(url)
+    except Exception:
+        pass
+
+    # Fallback: open URL via AppleScript in default browser
+    return native.run_applescript(f'open location "{url}"')
+
+
+def _handle_run_js(expression):
+    """Handle: run js document.title, js alert('hi')."""
+    expression = expression.strip()
+    if not expression:
+        return {"ok": False, "error": "No JavaScript expression"}
+
+    expression = _strip_quotes(expression)
+
+    try:
+        from nexus.sense.web import cdp_available, run_js
+        if not cdp_available():
+            return {"ok": False, "error": "CDP not available — launch Chrome with --remote-debugging-port=9222"}
+        result = run_js(expression)
+        if result.get("ok"):
+            value = result.get("value")
+            return {
+                "ok": True,
+                "action": "run_js",
+                "text": str(value) if value is not None else "(undefined)",
+            }
+        return result
+    except Exception as e:
+        return {"ok": False, "error": f"JS execution failed: {e}"}

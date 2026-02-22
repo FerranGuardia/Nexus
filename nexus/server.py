@@ -105,6 +105,8 @@ def do(action: str, app: str | None = None) -> str:
         tile <app> and <app>     - Tile two windows side by side
         move window left/right   - Position window on screen half
         maximize                 - Maximize focused window
+        navigate <url>           - Open URL in Chrome (CDP)
+        js <expression>          - Run JavaScript in Chrome (CDP)
         notify <message>         - macOS notification
         say <text>               - Speak aloud
 
@@ -113,6 +115,7 @@ def do(action: str, app: str | None = None) -> str:
 
     Use `see` first to know what elements are available.
     Use `see(menus=true)` to discover what menu commands are available.
+    When Chrome is focused, `see` includes web page content via CDP.
     """
     from nexus.act.resolve import do as _do
     import time
