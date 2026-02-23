@@ -42,6 +42,7 @@ from nexus.act.resolve import (
     _handle_restore,
     _handle_resize,
     _handle_fullscreen,
+    _list_windows,
     ORDINAL_WORDS,
     KEY_ALIASES,
     VERB_SYNONYMS,
@@ -3701,3 +3702,68 @@ class TestWindowInfo:
         mock_native.window_info.return_value = {"ok": True}
         result = do("get window info")
         mock_native.window_info.assert_called_once()
+
+
+# ===========================================================================
+# TestListWindows
+# ===========================================================================
+
+
+class TestListWindows:
+    """Tests for _list_windows and routing."""
+
+    @patch("nexus.act.resolve.native")
+    @patch("nexus.act.resolve.raw_input")
+    def test_list_windows_routed(self, mock_raw_input, mock_native):
+        with patch("nexus.act.resolve._list_windows", return_value={"ok": True}) as mock_lw:
+            do("list windows")
+            mock_lw.assert_called_once()
+
+    @patch("nexus.act.resolve.native")
+    @patch("nexus.act.resolve.raw_input")
+    def test_get_windows_routed(self, mock_raw_input, mock_native):
+        with patch("nexus.act.resolve._list_windows", return_value={"ok": True}) as mock_lw:
+            do("get windows")
+            mock_lw.assert_called_once()
+
+    @patch("nexus.act.resolve.native")
+    @patch("nexus.act.resolve.raw_input")
+    def test_windows_routed(self, mock_raw_input, mock_native):
+        with patch("nexus.act.resolve._list_windows", return_value={"ok": True}) as mock_lw:
+            do("windows")
+            mock_lw.assert_called_once()
+
+    @patch("nexus.act.resolve.native")
+    @patch("nexus.act.resolve.raw_input")
+    def test_show_windows_routed(self, mock_raw_input, mock_native):
+        with patch("nexus.act.resolve._list_windows", return_value={"ok": True}) as mock_lw:
+            do("show windows")
+            mock_lw.assert_called_once()
+
+    @patch("nexus.sense.access.windows", return_value=[])
+    def test_list_windows_empty(self, mock_wins):
+        result = _list_windows()
+        assert result["ok"] is True
+        assert "No windows" in result["text"]
+
+    @patch("nexus.sense.access.windows", return_value=[
+        {"app": "Safari", "title": "Google", "pid": 100, "bounds": {"x": 0, "y": 25, "w": 1920, "h": 1055}},
+        {"app": "Terminal", "title": "zsh", "pid": 200, "bounds": {"x": 960, "y": 25, "w": 960, "h": 1055}},
+    ])
+    def test_list_windows_with_results(self, mock_wins):
+        result = _list_windows()
+        assert result["ok"] is True
+        assert result["count"] == 2
+        assert "Safari" in result["text"]
+        assert "Terminal" in result["text"]
+        assert "1920x1055" in result["text"]
+
+    @patch("nexus.sense.access.windows", return_value=[
+        {"app": "Finder", "title": "", "pid": 300, "bounds": {"x": 0, "y": 0, "w": 800, "h": 600}},
+    ])
+    def test_list_windows_no_title(self, mock_wins):
+        result = _list_windows()
+        assert result["ok"] is True
+        assert "Finder" in result["text"]
+        # No title → no dash
+        assert '—' not in result["text"]

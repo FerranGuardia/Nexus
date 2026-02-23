@@ -152,6 +152,7 @@ def do(action: str, app: str | None = None) -> str:
         fullscreen               - Toggle true macOS fullscreen (green button)
         exit fullscreen          - Exit fullscreen mode
         where is <app>?          - Get window position, size, and state
+        list windows             - List all visible windows with positions
         navigate <url>           - Open URL in Chrome (CDP)
         js <expression>          - Run JavaScript in Chrome (CDP)
         switch tab <n>           - Switch Chrome tab by number or title (CDP)

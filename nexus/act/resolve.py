@@ -651,6 +651,9 @@ def do(action, pid=None):
         return _handle_read_list(pid=pid)
 
     # --- Window info getters ---
+    if lower in ("list windows", "get windows", "windows", "show windows"):
+        return _list_windows()
+
     if lower.startswith("where is ") or lower.startswith("where's "):
         app_q = action.strip().split(None, 2)[-1].rstrip("?").strip()
         return native.window_info(app_name=app_q)
@@ -1788,6 +1791,23 @@ def _handle_read_list(pid=None):
             parts.append(f'  ... and {len(items) - 30} more items')
 
     return {"ok": True, "action": "read_list", "text": "\n".join(parts)}
+
+
+def _list_windows():
+    """List all visible on-screen windows with their positions."""
+    from nexus.sense.access import windows
+    wins = windows()
+    if not wins:
+        return {"ok": True, "action": "list_windows", "text": "No windows found."}
+
+    lines = []
+    for i, w in enumerate(wins, 1):
+        b = w["bounds"]
+        title = f' — "{w["title"]}"' if w.get("title") else ""
+        lines.append(f"  {i}. {w['app']}{title}  [{b['w']}x{b['h']} at {b['x']},{b['y']}]")
+
+    header = f"{len(wins)} windows on screen:"
+    return {"ok": True, "action": "list_windows", "count": len(wins), "text": header + "\n" + "\n".join(lines)}
 
 
 # ---------------------------------------------------------------------------

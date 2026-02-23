@@ -536,3 +536,25 @@ class TestObserveSmoke:
         assert len(_NOTIFICATIONS) >= 5
         assert "AXWindowCreated" in _NOTIFICATIONS
         assert "AXValueChanged" in _NOTIFICATIONS
+
+
+# ===========================================================================
+# List windows (real code path)
+# ===========================================================================
+
+
+class TestListWindows:
+    """Smoke tests for list windows getter."""
+
+    def test_list_windows_returns_dict(self):
+        from nexus.act.resolve import _list_windows
+        result = _list_windows()
+        assert isinstance(result, dict)
+        assert result["ok"] is True
+        assert "text" in result
+
+    def test_list_windows_via_do(self):
+        from nexus.act.resolve import do
+        result = do("list windows")
+        assert isinstance(result, dict)
+        assert result["ok"] is True

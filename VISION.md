@@ -21,157 +21,104 @@ Nexus inverts this. Three tools:
 
 Under the hood, Nexus routes through accessibility APIs, AppleScript, keyboard/mouse, and app-specific scripting. The AI never thinks about which API to use. It just sees and does.
 
-## What's Built (v2.0)
+## What's Built
+
+**11,500+ LOC across 13 source files + 4 test files. 699 tests, all passing.**
 
 ### Perception (`see`)
 - macOS accessibility tree via AXUIElement (pyobjc)
 - Window list with titles and bounds
 - Focused element detection
 - Fuzzy element search (`see(query="save button")`)
-- Menu bar traversal (`see(menus=True)`) — shows every command available
+- Menu bar traversal (`see(menus=True)`) — shows every command + shortcuts
 - Screenshots via Quartz/CoreGraphics
-- Graceful degradation without accessibility permission
+- Change detection (`see(diff=True)`) — compares with previous snapshot
+- Content reading (`see(content=True)`) — reads text from documents, text areas, fields
+- Background observation (`see(observe=True)`) — AXObserver monitors for UI changes
+- Auto-detects AXTable and AXList/AXOutline, renders as ASCII tables
+- Hierarchical grouping — elements shown under container headings (Toolbar, Dialog, Tabs)
+- Smart truncation — 80 elements max, filters noise, "use query=" hint
+- Tree cache with 1s TTL — 6x speedup on typical `do()` cycles
+- Single-pass tree walk — elements, tables, and lists collected in one traversal
+- Wrapper group suppression — AXGroup "X" + AXButton "X" → only button shown
+- CDP auto-enrichment — when Chrome is focused, `see()` includes web page content
 
 ### Action (`do`)
 - Intent-based: `do("click Save")`, not `click_at(340, 220)`
+- **70+ intent patterns** — click, type, press, scroll, fill, wait, navigate, drag, hover, and more
+- Verb synonym expansion: tap/hit/select → click, enter/input → type, visit/browse → navigate
+- Action chains: `do("open Safari; navigate google.com; wait 1s")` — semicolon-separated, fail-fast
+- Ordinal references: `do("click the 2nd button")`, `do("last checkbox")`, `do("link 3")`
+- Spatial references: `do("click button near search")`, `do("field below Username")`
+- Region-based: `do("click button in top-right")` — 7 screen regions
+- Container scoping: `do("click delete in the row with Alice")`, `do("click delete in row 3")`
+- App targeting: `do("click OK", app="Safari")` — acts on background apps
+- Modifier-click: shift-click, cmd-click, option-click, ctrl-click
+- Double-click, right-click, triple-click
+- Hover — move mouse to element without clicking
+- Form filling: `do("fill Name=Ferran, Email=f@x.com")`
+- Wait conditions: `do("wait for Save dialog")`, `do("wait 2s")`, `do("wait until X disappears")`
+- Element-based drag: `do("drag file.txt to Trash")`
+- Scroll targeting: `do("scroll down in sidebar")`, `do("scroll until Save appears")`
+- Structured data: `do("read table")`, `do("read list")`, `do("list windows")`
+- **Window management**: minimize, restore, resize (WxH or %), grid positions (halves, quarters, thirds), coordinate moves, true fullscreen toggle, window info query
 - Menu paths: `do("click File > Save As")`
 - Keyboard: `do("press cmd+s")`
-- Typing: `do("type hello in search field")`
-- App control: `do("open Safari")`, `do("switch to Terminal")`
-- Window management: `do("tile Safari and Terminal")`, `do("move window left")`
-- Clipboard: `do("get clipboard")`, `do("set clipboard hello")`
-- Safari integration: `do("get url")`, `do("get tabs")`
-- AppleScript passthrough for app-specific commands
-- Notifications: `do("notify Build complete")`
-- Text-to-speech: `do("say hello")`
+- CDP: `do("navigate url")`, `do("js expression")`, tab management
+- Observation: `do("observe start/stop/status/clear")`
+- Clipboard, Safari URL/tabs, Finder selection, notifications, text-to-speech
+- **Error recovery**: fuzzy "Did you mean?" suggestions + role counts
+- **Action verification**: auto-snapshots before/after, reports what changed
+- **Self-improving memory**: auto-learns label translations (e.g., "Save" → "Guardar") from fail→succeed correlation
 
 ### Memory (`memory`)
 - Persistent JSON store at `~/.nexus/memory.json`
 - Survives across sessions, conversations, and restarts
 - Simple CRUD: set, get, list, delete, clear
-
-## What's Been Built Since v2.0
-
-### Smarter Intent Resolution
-- Ordinal references: `do("click the 2nd button")`, `do("last checkbox")`, `do("link 3")`
-- Form filling: `do("fill Name=Ferran, Email=f@x.com")`
-- Wait conditions: `do("wait for Save dialog")`, `do("wait 2s")`, `do("wait until X disappears")`
-- App targeting: `do("click OK", app="Safari")` — acts on background apps without focus switch
-
-### Change Detection
-- `see(diff=True)` — compares with previous snapshot, shows new/gone/changed elements
-- Action verification — `do()` auto-snapshots before/after and reports what changed
+- Stats: show learning stats (label mappings, action history)
 
 ### Electron App Support
 - Auto-detects Electron apps (VS Code, Slack, Discord, Figma, etc.)
 - Sets `AXManualAccessibility` to unlock full accessibility tree (~5 → 59+ elements)
 - Walks to depth 20 for Electron apps (content nests deep in Chromium DOM)
-- Sidebar tabs, toolbar buttons, status bar, panel toggles — all visible and clickable
 
-### Browser Deep Integration
-- CDP integration via `nexus/sense/web.py` — connects to Chrome's debugging port
-- `see()` auto-enriches with web page content when Chrome is focused
-- `do("navigate <url>")` and `do("js <expression>")` for direct web control
+### Chrome Deep Integration (CDP)
+- Auto-enriches `see()` with web page content when Chrome is focused
 - `ensure_cdp()` auto-launches Chrome with debugging port if not running
+- Multi-tab management: switch tab, new tab, close tab
+- JS execution and URL navigation
 
-### Flexible Intent Resolution
-- Verb synonym expansion: tap/hit/select → click, enter/input → type, visit/browse/load → navigate, launch/start → open
-- Multi-word phrase synonyms: "click on", "press on", "tap on", "go to" → normalized before dispatch
-- Action chains: `do("open Safari; navigate google.com; wait 1s")` — semicolon-separated, fail-fast
-- 327 tests covering intent parsing, synonyms, chains, and edge cases
-
-### Content Reading
-- `see(content=True)` — reads text content from documents, text areas, and fields
-- Shows what's *written* in the app, not just the UI structure
-- Extracts AXValue from text areas, text fields, web areas, and scroll areas
-- Smart truncation: up to 5000 chars across all content, preview for long documents
-
-### Spatial & Contextual Element Resolution
-- Proximity: `do("click button near search")` — finds nearest element to a reference
-- Directional: `do("click field below Username")` — above, below, left of, right of
-- Region-based: `do("click button in top-right")` — screen quadrant targeting
-- Supports role+label combos: `do("click close button near search")`
-- Alignment-weighted scoring: directional queries prefer elements in line with the reference
-- 7 regions: top-left, top-right, bottom-left, bottom-right, top, bottom, center
-
-### Multi-Tab Chrome Management
-- `do("switch tab 2")` or `do("switch tab Google")` — switch tabs by index or title
-- `do("new tab google.com")` — open new tab with optional URL
-- `do("close tab")` or `do("close tab 3")` — close current or specific tab
-- All via CDP (Chrome DevTools Protocol) — works alongside existing navigate/js intents
-
-### Integration Test Suite
-- 546 tests total: 501 unit tests + 45 integration smoke tests
-- Smoke tests exercise real code paths: see() output structure, memory round-trips, do() getters
-- No mocking needed — tests run on any macOS machine with accessibility enabled
-
-### Perception Performance & Quality
-- **Single-pass tree walk**: `see()` collects elements, tables, and lists in one walk instead of three
-- **Tree cache (1s TTL)**: `describe_app()` caches results — 6x speedup on `do()` (snap→action→snap)
-- **Hierarchical grouping**: elements shown under container headings (Toolbar, Dialog, Tabs)
-- **Wrapper suppression**: AXGroup wrappers that duplicate interactive elements are filtered out
-- Result: 29% fewer elements, structured output, 3.4s saved per action
+### Test Suite
+- **699 tests**: ~579 unit tests + ~65 integration smoke tests + 26 observe + 39 learning
+- Unit tests mock all OS APIs — run anywhere, fast
+- Smoke tests exercise real code paths on macOS
 
 ## Known Issues & Hard Truths
 
-Honest assessment of where Nexus falls short, written so we can fix it.
-
 ### 1. The "Why Not Just Use the CLI?" Problem
-Nexus automates GUI apps — but most power users (the exact audience who'd install an MCP server) already live in the terminal. The killer use case isn't clear yet. When does clicking buttons through accessibility APIs beat a shell command? Possible answers: testing GUI apps, automating apps with no CLI (Figma, Keynote), accessibility for users who can't use a mouse. But we haven't proven any of these compellingly.
+Nexus automates GUI apps — but most power users already live in the terminal. The killer use case: automating apps with no CLI (Figma, Keynote, System Settings), testing GUI apps, accessibility for users who can't use a mouse, and orchestrating multi-app workflows that span CLI and GUI.
 
-### ~~2. Electron Blindness~~ → SOLVED
-~~VS Code gives ~5 elements~~ → **59+ elements** after enabling `AXManualAccessibility`. Nexus now auto-detects Electron apps (VS Code, Slack, Discord, Figma, etc.) and sets this attribute, which tells Chromium to build the full native accessibility tree. Sidebar tabs, toolbar buttons, status bar, panel toggles — all visible and clickable. The fix waits up to 2s for the tree to build (Chromium does it async) and walks to depth 20 (Electron nests content deep). See `access.py`: `_ensure_electron_accessibility()`. For even richer access, VS Code can be launched with `--remote-debugging-port=9222` for full CDP integration.
+### 2. Locale Dependency
+macOS AXRoleDescription is localized — on a Spanish system, buttons are "botón", links are "enlace". The code uses AXRole (locale-independent) for matching and the self-improving memory auto-learns label translations. But fuzzy matching across locales could still struggle. Partially handled, not robustly tested.
 
-### ~~3. Fragile Intent Parser~~ → SOLVED
-`resolve.py` now has a synonym expansion layer, spatial resolution, and ordinal parsing. "hit Save", "tap OK", "press on Submit", "visit google.com", "enter hello" all work. Spatial references work too: "button near search", "field below Username", "button in top-right". Multi-word phrases ("click on", "go to", "press on") are handled before single-word synonyms. Action chains run sequentially with fail-fast semantics. Remaining: typo tolerance.
+### 3. VS Code Focus-Stealing
+VS Code hosts the MCP server, so it steals focus during actions. Mitigated with `_schedule_focus_restore()` which re-activates the target app after a 0.4s delay. Works well but isn't perfect for rapid-fire actions.
 
-### ~~4. Zero Test Suite~~ → SOLVED
-327 tests for intent parsing in `tests/test_resolve.py`. Covers ordinal parsing, intent routing, keyboard handling, scroll/drag/tile/move/type, URL normalization, verb synonyms, action chains. All mocked — no real UI needed. Still needed: integration smoke tests for see/do/memory round-trip.
+## What's Left to Build
 
-### ~~5. CDP Requires Manual Setup~~ → MOSTLY SOLVED
-`ensure_cdp()` auto-launches Chrome with `--remote-debugging-port=9222` if Chrome isn't running. If Chrome IS running without the flag, gives a clear restart message. Only auto-launches on explicit actions (navigate, js), not passive see(). Remaining: auto-detect and offer to restart Chrome.
-
-### ~~6. Token Cost of `see()`~~ → SOLVED
-`see()` now caps at 80 elements (configurable), filters noise (unlabeled static text/images, wrapper groups), and shows `... and N more (use query= to search)`. Menu bar capped to 150 items (depth ≤ 2). Elements are grouped by container (Toolbar, Dialog, etc.) for better readability. Wrapper groups that duplicate interactive elements are automatically suppressed.
-
-### 7. Locale Dependency
-macOS AXRoleDescription is localized — on a Spanish system, buttons are "botón", links are "enlace". The code uses AXRole (locale-independent) for matching, but user-facing output still shows localized strings. If someone writes `do("click the button")` on a Japanese system, fuzzy matching may struggle. This is partially handled but not robustly tested across locales.
-
-### ~~8. No Error Recovery~~ → PARTIALLY SOLVED
-Click failures now include fuzzy "Did you mean?" suggestions. Ordinal failures show role counts on screen. Both surfaced in do() output. Remaining: retry logic, "wrong app focused" detection.
-
-### 1. Self-Improving Memory
-The `memory` tool is currently a dumb key-value store.
-What if Nexus remembered successful action patterns?
-- "Last time we clicked Save in TextEdit, it triggered a file dialog"
-- "This user prefers VS Code over Xcode"
-- "Safari's developer tools are at Develop > Show Web Inspector"
-
-Memory that makes Nexus better at resolving intents over time.
-
-### ~~2. Spatial & Contextual References~~ → SOLVED
-The intent resolver now handles spatial references:
-- `do("click button near search")` — proximity-based
-- `do("click field below Username")` — directional (above, below, left of, right of)
-- `do("click button in top-right")` — screen region targeting
-- Alignment-weighted scoring for directional queries. 433 tests cover all patterns.
-Remaining: container scoping ("select everything in the table").
-
-### 3. Cross-Platform
-The architecture is deliberately layered:
-- `sense/fusion.py` and `act/resolve.py` are platform-agnostic
-- `sense/access.py` and `act/native.py` are macOS-specific
-
-A Linux backend (AT-SPI) or Windows backend (UIA) could slot in without changing
-the three-tool interface. The AI doesn't care which OS it's on.
-
-### 4. Deeper Web Integration → MOSTLY SOLVED
-CDP gives us page content, JS execution, and multi-tab management. Done:
-- Auto-launch Chrome with debugging port when needed ✓
-- Multi-tab management: switch tab, new tab, close tab ✓
-Remaining:
+### CDP Depth
 - Network request interception (watch API calls)
-- Console log capture (catch errors)
+- Console log capture (catch JS errors)
+
+### Resilience
+- Typo tolerance in verb parsing ("clck Save" → "click Save")
+- Auto-retry on "wrong app focused" detection
+- Auto-detect and restart Chrome with debugging port
+
+### Ambition
+- Multi-monitor support (`move window to display 2`)
+- Workflow recording — "watch what I do" → replay as action chain
+- Cross-platform (Linux via AT-SPI, Windows via UIA) — the architecture is layered for it
 
 ## Design Principles (Non-Negotiable)
 
@@ -187,18 +134,12 @@ Remaining:
 If you're an AI continuing this work, here's what matters:
 
 - Read `CLAUDE.md` for the architecture and how to run things
-- The codebase is small (~2500 LOC across 11 files). Read all of it
+- The codebase is ~11,500 LOC across 17 files. Start with `server.py` → `fusion.py` → `resolve.py`
 - Test with real apps: Safari has the richest accessibility tree, Finder is good too
-- VS Code (Electron) has a shallow accessibility tree — that's an Electron limitation, not ours
+- VS Code (Electron) needs `AXManualAccessibility` — Nexus handles this automatically
 - macOS accessibility permission must be granted to the parent app (Terminal, VS Code, etc.)
 - The `.venv` uses Python 3.12 via Homebrew at `/Users/ferran/repos/Nexus/.venv/`
-- Always test changes with: `source .venv/bin/activate && python3 -c "from nexus.sense.fusion import see; print(see()['text'])"`
+- Always run tests: `source .venv/bin/activate && python -m pytest tests/ -q`
+- Quick test: `python -c "from nexus.sense.fusion import see; print(see()['text'])"`
 
-Read the "Known Issues & Hard Truths" section — that's where the real work is.
-
-The most impactful things you could build next:
-1. Test suite for intent parsing — highest ROI, prevents regressions
-2. Electron/VS Code workaround — solve the blindness problem
-3. Intent normalization — make the parser less fragile
-4. Auto-launch Chrome with debugging port — remove CDP friction
-5. Smart tree truncation — reduce token cost of see()
+Read the "Known Issues" and "What's Left" sections — that's where the real work is.
