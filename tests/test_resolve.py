@@ -22,19 +22,34 @@ from nexus.act.resolve import (
     _filter_by_search,
     _click_spatial,
     _click_in_region,
+    _parse_container,
+    _click_in_container,
+    _find_and_click_in_row,
+    _scroll_in_element,
+    _scroll_until,
+    _handle_hover,
+    _handle_drag,
+    _handle_read_table,
+    _handle_read_list,
+    _resolve_modifiers,
     do,
     _handle_scroll,
-    _handle_drag,
     _handle_tile,
     _handle_move,
     _handle_press,
     _handle_type,
+    _handle_minimize,
+    _handle_restore,
+    _handle_resize,
+    _handle_fullscreen,
     ORDINAL_WORDS,
     KEY_ALIASES,
     VERB_SYNONYMS,
     PHRASE_SYNONYMS,
     SPATIAL_RELATIONS,
     REGION_PATTERNS,
+    ROLE_MAP,
+    ROLE_WORDS,
 )
 
 
@@ -615,9 +630,81 @@ class TestDoRouting:
         mock_native.maximize_window.assert_called_once()
 
     def test_fullscreen(self, mock_native, mock_raw_input):
-        mock_native.maximize_window.return_value = {"ok": True}
+        mock_native.fullscreen_window.return_value = {"ok": True}
         do("fullscreen")
+        mock_native.fullscreen_window.assert_called_once()
+
+    def test_maximize_is_not_fullscreen(self, mock_native, mock_raw_input):
+        mock_native.maximize_window.return_value = {"ok": True}
+        do("maximize")
         mock_native.maximize_window.assert_called_once()
+        mock_native.fullscreen_window.assert_not_called()
+
+    def test_enter_fullscreen(self, mock_native, mock_raw_input):
+        mock_native.fullscreen_window.return_value = {"ok": True}
+        do("enter fullscreen")
+        mock_native.fullscreen_window.assert_called_once()
+
+    def test_exit_fullscreen(self, mock_native, mock_raw_input):
+        mock_native.fullscreen_window.return_value = {"ok": True}
+        do("exit fullscreen")
+        mock_native.fullscreen_window.assert_called_once()
+
+    def test_minimize_shortcut(self, mock_native, mock_raw_input):
+        mock_native.minimize_window.return_value = {"ok": True}
+        do("minimize")
+        mock_native.minimize_window.assert_called_once()
+
+    def test_minimize_window_shortcut(self, mock_native, mock_raw_input):
+        mock_native.minimize_window.return_value = {"ok": True}
+        do("minimize window")
+        mock_native.minimize_window.assert_called_once()
+
+    def test_minimize_app_routed(self, mock_native, mock_raw_input):
+        mock_native.minimize_window.return_value = {"ok": True}
+        do("minimize Safari")
+        mock_native.minimize_window.assert_called_once_with(app_name="Safari")
+
+    def test_restore_shortcut(self, mock_native, mock_raw_input):
+        mock_native.unminimize_window.return_value = {"ok": True}
+        do("restore")
+        mock_native.unminimize_window.assert_called_once()
+
+    def test_unminimize_shortcut(self, mock_native, mock_raw_input):
+        mock_native.unminimize_window.return_value = {"ok": True}
+        do("unminimize window")
+        mock_native.unminimize_window.assert_called_once()
+
+    def test_restore_app_routed(self, mock_native, mock_raw_input):
+        mock_native.unminimize_window.return_value = {"ok": True}
+        do("restore Safari")
+        mock_native.unminimize_window.assert_called_once_with(app_name="Safari")
+
+    @patch("nexus.act.input.screen_size", return_value={"width": 1920, "height": 1080})
+    def test_resize_routed(self, mock_screen, mock_native, mock_raw_input):
+        mock_native.resize_window.return_value = {"ok": True}
+        do("resize to 800x600")
+        mock_native.resize_window.assert_called_once()
+
+    def test_fullscreen_app_routed(self, mock_native, mock_raw_input):
+        mock_native.fullscreen_window.return_value = {"ok": True}
+        do("fullscreen Safari")
+        mock_native.fullscreen_window.assert_called_once_with(app_name="Safari")
+
+    def test_where_is_routed(self, mock_native, mock_raw_input):
+        mock_native.window_info.return_value = {"ok": True}
+        do("where is Safari?")
+        mock_native.window_info.assert_called_once()
+
+    def test_wheres_routed(self, mock_native, mock_raw_input):
+        mock_native.window_info.return_value = {"ok": True}
+        do("where's Chrome?")
+        mock_native.window_info.assert_called_once()
+
+    def test_window_info_routed(self, mock_native, mock_raw_input):
+        mock_native.window_info.return_value = {"ok": True}
+        do("window info")
+        mock_native.window_info.assert_called_once()
 
     # --- Click ---
 
@@ -1084,9 +1171,10 @@ class TestHandleDrag:
         assert "Drag format" in result["error"]
 
     def test_invalid_drag_missing_coords(self, mock_raw_input):
+        # "100 to 300" is now treated as element-based drag: drag "100" to "300"
+        # Elements won't be found (mocked), so it returns source not found
         result = _handle_drag("100 to 300")
         assert result["ok"] is False
-        assert "Drag format" in result["error"]
 
     def test_invalid_drag_text(self, mock_raw_input):
         result = _handle_drag("from here to there")
@@ -1160,31 +1248,31 @@ class TestHandleMove:
     def test_move_window_left(self, mock_screen, mock_raw_input, mock_native):
         mock_native.move_window.return_value = {"ok": True}
         _handle_move("window left")
-        mock_native.move_window.assert_called_once_with(None, x=0, y=25, w=960, h=1055)
+        mock_native.move_window.assert_called_once_with(None, x=0, y=25, w=960, h=1055, window_index=1)
 
     @patch("nexus.act.input.screen_size", return_value={"width": 1920, "height": 1080})
     def test_move_window_right(self, mock_screen, mock_raw_input, mock_native):
         mock_native.move_window.return_value = {"ok": True}
         _handle_move("window right")
-        mock_native.move_window.assert_called_once_with(None, x=960, y=25, w=960, h=1055)
+        mock_native.move_window.assert_called_once_with(None, x=960, y=25, w=960, h=1055, window_index=1)
 
     @patch("nexus.act.input.screen_size", return_value={"width": 2560, "height": 1440})
     def test_move_window_left_retina(self, mock_screen, mock_raw_input, mock_native):
         mock_native.move_window.return_value = {"ok": True}
         _handle_move("window left")
-        mock_native.move_window.assert_called_once_with(None, x=0, y=25, w=1280, h=1415)
+        mock_native.move_window.assert_called_once_with(None, x=0, y=25, w=1280, h=1415, window_index=1)
 
     @patch("nexus.act.input.screen_size", return_value={"width": 1920, "height": 1080})
     def test_move_safari_left(self, mock_screen, mock_raw_input, mock_native):
         mock_native.move_window.return_value = {"ok": True}
         _handle_move("Safari left")
-        mock_native.move_window.assert_called_once_with("safari", x=0, y=25, w=960, h=1055)
+        mock_native.move_window.assert_called_once_with("safari", x=0, y=25, w=960, h=1055, window_index=1)
 
     @patch("nexus.act.input.screen_size", return_value={"width": 1920, "height": 1080})
     def test_move_window_center(self, mock_screen, mock_raw_input, mock_native):
         mock_native.move_window.return_value = {"ok": True}
         _handle_move("window center")
-        mock_native.move_window.assert_called_once_with(None, x=480, y=25, w=960, h=1055)
+        mock_native.move_window.assert_called_once_with(None, x=480, y=25, w=960, h=1055, window_index=1)
 
     @patch("nexus.act.input.screen_size", return_value={"width": 1920, "height": 1080})
     def test_move_window_full(self, mock_screen, mock_raw_input, mock_native):
@@ -1196,25 +1284,120 @@ class TestHandleMove:
     def test_move_unknown_direction(self, mock_screen, mock_raw_input, mock_native):
         result = _handle_move("window diagonal")
         assert result["ok"] is False
-        assert "Unknown direction" in result["error"]
+        assert "Unknown position" in result["error"]
 
     @patch("nexus.act.input.screen_size", return_value={"width": 1920, "height": 1080})
     def test_move_alias_l(self, mock_screen, mock_raw_input, mock_native):
         mock_native.move_window.return_value = {"ok": True}
         _handle_move("window l")
-        mock_native.move_window.assert_called_once_with(None, x=0, y=25, w=960, h=1055)
+        mock_native.move_window.assert_called_once_with(None, x=0, y=25, w=960, h=1055, window_index=1)
 
     @patch("nexus.act.input.screen_size", return_value={"width": 1920, "height": 1080})
     def test_move_alias_r(self, mock_screen, mock_raw_input, mock_native):
         mock_native.move_window.return_value = {"ok": True}
         _handle_move("window r")
-        mock_native.move_window.assert_called_once_with(None, x=960, y=25, w=960, h=1055)
+        mock_native.move_window.assert_called_once_with(None, x=960, y=25, w=960, h=1055, window_index=1)
 
     @patch("nexus.act.input.screen_size", return_value={"width": 1920, "height": 1080})
     def test_move_maximize_alias(self, mock_screen, mock_raw_input, mock_native):
         mock_native.maximize_window.return_value = {"ok": True}
         _handle_move("window maximize")
         mock_native.maximize_window.assert_called_once_with(None)
+
+    # --- Top/bottom halves ---
+    @patch("nexus.act.input.screen_size", return_value={"width": 1920, "height": 1080})
+    def test_move_window_top(self, mock_screen, mock_raw_input, mock_native):
+        mock_native.move_window.return_value = {"ok": True}
+        _handle_move("window top")
+        mock_native.move_window.assert_called_once_with(None, x=0, y=25, w=1920, h=527, window_index=1)
+
+    @patch("nexus.act.input.screen_size", return_value={"width": 1920, "height": 1080})
+    def test_move_window_bottom(self, mock_screen, mock_raw_input, mock_native):
+        mock_native.move_window.return_value = {"ok": True}
+        _handle_move("window bottom")
+        mock_native.move_window.assert_called_once_with(None, x=0, y=552, w=1920, h=527, window_index=1)
+
+    # --- Quarters ---
+    @patch("nexus.act.input.screen_size", return_value={"width": 1920, "height": 1080})
+    def test_move_window_top_left(self, mock_screen, mock_raw_input, mock_native):
+        mock_native.move_window.return_value = {"ok": True}
+        _handle_move("window top-left")
+        mock_native.move_window.assert_called_once_with(None, x=0, y=25, w=960, h=527, window_index=1)
+
+    @patch("nexus.act.input.screen_size", return_value={"width": 1920, "height": 1080})
+    def test_move_window_top_right(self, mock_screen, mock_raw_input, mock_native):
+        mock_native.move_window.return_value = {"ok": True}
+        _handle_move("window top-right")
+        mock_native.move_window.assert_called_once_with(None, x=960, y=25, w=960, h=527, window_index=1)
+
+    @patch("nexus.act.input.screen_size", return_value={"width": 1920, "height": 1080})
+    def test_move_window_bottom_left(self, mock_screen, mock_raw_input, mock_native):
+        mock_native.move_window.return_value = {"ok": True}
+        _handle_move("window bottom-left")
+        mock_native.move_window.assert_called_once_with(None, x=0, y=552, w=960, h=527, window_index=1)
+
+    @patch("nexus.act.input.screen_size", return_value={"width": 1920, "height": 1080})
+    def test_move_window_bottom_right(self, mock_screen, mock_raw_input, mock_native):
+        mock_native.move_window.return_value = {"ok": True}
+        _handle_move("window bottom-right")
+        mock_native.move_window.assert_called_once_with(None, x=960, y=552, w=960, h=527, window_index=1)
+
+    @patch("nexus.act.input.screen_size", return_value={"width": 1920, "height": 1080})
+    def test_move_window_topleft_joined(self, mock_screen, mock_raw_input, mock_native):
+        mock_native.move_window.return_value = {"ok": True}
+        _handle_move("window topleft")
+        mock_native.move_window.assert_called_once_with(None, x=0, y=25, w=960, h=527, window_index=1)
+
+    @patch("nexus.act.input.screen_size", return_value={"width": 1920, "height": 1080})
+    def test_move_window_bottomright_joined(self, mock_screen, mock_raw_input, mock_native):
+        mock_native.move_window.return_value = {"ok": True}
+        _handle_move("window bottomright")
+        mock_native.move_window.assert_called_once_with(None, x=960, y=552, w=960, h=527, window_index=1)
+
+    # --- Thirds ---
+    @patch("nexus.act.input.screen_size", return_value={"width": 1920, "height": 1080})
+    def test_move_window_left_third(self, mock_screen, mock_raw_input, mock_native):
+        mock_native.move_window.return_value = {"ok": True}
+        _handle_move("window left-third")
+        mock_native.move_window.assert_called_once_with(None, x=0, y=25, w=640, h=1055, window_index=1)
+
+    @patch("nexus.act.input.screen_size", return_value={"width": 1920, "height": 1080})
+    def test_move_window_center_third(self, mock_screen, mock_raw_input, mock_native):
+        mock_native.move_window.return_value = {"ok": True}
+        _handle_move("window center-third")
+        mock_native.move_window.assert_called_once_with(None, x=640, y=25, w=640, h=1055, window_index=1)
+
+    @patch("nexus.act.input.screen_size", return_value={"width": 1920, "height": 1080})
+    def test_move_window_right_third(self, mock_screen, mock_raw_input, mock_native):
+        mock_native.move_window.return_value = {"ok": True}
+        _handle_move("window right-third")
+        mock_native.move_window.assert_called_once_with(None, x=1280, y=25, w=640, h=1055, window_index=1)
+
+    @patch("nexus.act.input.screen_size", return_value={"width": 1920, "height": 1080})
+    def test_move_window_middle_third(self, mock_screen, mock_raw_input, mock_native):
+        mock_native.move_window.return_value = {"ok": True}
+        _handle_move("window middle-third")
+        mock_native.move_window.assert_called_once_with(None, x=640, y=25, w=640, h=1055, window_index=1)
+
+    # --- Coordinate move ---
+    @patch("nexus.act.input.screen_size", return_value={"width": 1920, "height": 1080})
+    def test_move_safari_to_coordinates(self, mock_screen, mock_raw_input, mock_native):
+        mock_native.move_window.return_value = {"ok": True}
+        _handle_move("Safari to 100,200")
+        mock_native.move_window.assert_called_once_with("Safari", x=100, y=200, window_index=1)
+
+    @patch("nexus.act.input.screen_size", return_value={"width": 1920, "height": 1080})
+    def test_move_window_to_coordinates(self, mock_screen, mock_raw_input, mock_native):
+        mock_native.move_window.return_value = {"ok": True}
+        _handle_move("window to 100,200")
+        mock_native.move_window.assert_called_once_with(None, x=100, y=200, window_index=1)
+
+    # --- Window index ---
+    @patch("nexus.act.input.screen_size", return_value={"width": 1920, "height": 1080})
+    def test_move_window_2_left(self, mock_screen, mock_raw_input, mock_native):
+        mock_native.move_window.return_value = {"ok": True}
+        _handle_move("window 2 left")
+        mock_native.move_window.assert_called_once_with(None, x=0, y=25, w=960, h=1055, window_index=2)
 
 
 # ===========================================================================
@@ -1753,7 +1936,7 @@ class TestVerbSynonymDicts:
     """Tests that synonym dictionaries are well-formed."""
 
     def test_all_verb_synonyms_map_to_known_verbs(self):
-        known_verbs = {"click", "type", "open", "close", "scroll", "navigate", "focus", "switch"}
+        known_verbs = {"click", "type", "open", "close", "scroll", "navigate", "focus", "switch", "hover"}
         for synonym, canonical in VERB_SYNONYMS.items():
             assert canonical in known_verbs, f'VERB_SYNONYMS["{synonym}"] = "{canonical}" is not a known verb'
 
@@ -2304,3 +2487,1217 @@ class TestSpatialDicts:
         known = {"top-left", "top-right", "bottom-left", "bottom-right", "top", "bottom", "center"}
         for _, region in REGION_PATTERNS:
             assert region in known, f"Unknown region: {region}"
+
+
+# ===========================================================================
+# TestHover — hover intent parsing and execution
+# ===========================================================================
+
+
+class TestHover:
+    """Tests for hover intent — moves mouse without clicking."""
+
+    @patch("nexus.act.resolve.raw_input")
+    def test_hover_coordinates(self, mock_input):
+        mock_input.hover.return_value = {"ok": True, "action": "hover", "x": 100, "y": 200}
+        result = _handle_hover("100,200")
+        mock_input.hover.assert_called_once_with(100, 200)
+        assert result["ok"] is True
+
+    @patch("nexus.act.resolve.raw_input")
+    def test_hover_coordinates_at_prefix(self, mock_input):
+        mock_input.hover.return_value = {"ok": True, "action": "hover", "x": 300, "y": 400}
+        result = _handle_hover("at 300,400")
+        mock_input.hover.assert_called_once_with(300, 400)
+
+    @patch("nexus.act.resolve.raw_input")
+    @patch("nexus.sense.access.find_elements")
+    def test_hover_element_by_name(self, mock_find, mock_input):
+        mock_find.return_value = [
+            {"label": "Save", "role": "button", "pos": (100, 200), "size": (80, 30)}
+        ]
+        mock_input.hover.return_value = {"ok": True}
+        result = _handle_hover("Save")
+        mock_input.hover.assert_called_once_with(140, 215)
+        assert result["ok"] is True
+        assert result["at"] == [140, 215]
+
+    @patch("nexus.act.resolve.raw_input")
+    @patch("nexus.sense.access.find_elements")
+    def test_hover_strips_over_prefix(self, mock_find, mock_input):
+        mock_find.return_value = [
+            {"label": "Search", "role": "field", "pos": (50, 50), "size": (200, 30)}
+        ]
+        mock_input.hover.return_value = {"ok": True}
+        result = _handle_hover("over Search")
+        mock_find.assert_called_with("Search", None)
+
+    @patch("nexus.act.resolve.raw_input")
+    @patch("nexus.sense.access.find_elements")
+    def test_hover_strips_the_prefix(self, mock_find, mock_input):
+        mock_find.return_value = [
+            {"label": "Menu", "role": "button", "pos": (10, 10), "size": (60, 20)}
+        ]
+        mock_input.hover.return_value = {"ok": True}
+        _handle_hover("over the Menu")
+        mock_find.assert_called_with("Menu", None)
+
+    @patch("nexus.sense.access.find_elements")
+    def test_hover_element_not_found(self, mock_find):
+        mock_find.return_value = []
+        result = _handle_hover("Nonexistent")
+        assert result["ok"] is False
+        assert "not found" in result["error"]
+
+    def test_hover_empty_target(self):
+        result = _handle_hover("")
+        assert result["ok"] is False
+        assert "Hover over what" in result["error"]
+
+    @patch("nexus.act.resolve.raw_input")
+    @patch("nexus.sense.access.find_elements")
+    def test_hover_no_position(self, mock_find, mock_input):
+        mock_find.return_value = [
+            {"label": "Ghost", "role": "button"}
+        ]
+        result = _handle_hover("Ghost")
+        assert result["ok"] is False
+        assert "no position" in result["error"]
+
+    @patch("nexus.act.resolve.raw_input")
+    def test_hover_via_do(self, mock_input):
+        """Test hover through the main do() dispatcher."""
+        mock_input.hover.return_value = {"ok": True, "action": "hover", "x": 50, "y": 60}
+        result = do("hover 50,60")
+        mock_input.hover.assert_called_once_with(50, 60)
+        assert result["ok"] is True
+
+    @patch("nexus.act.resolve.raw_input")
+    def test_mouseover_synonym(self, mock_input):
+        """Test 'mouseover' verb synonym maps to hover."""
+        mock_input.hover.return_value = {"ok": True, "action": "hover", "x": 10, "y": 20}
+        result = do("mouseover 10,20")
+        mock_input.hover.assert_called_once_with(10, 20)
+
+
+# ===========================================================================
+# TestModifierClick — shift-click, cmd-click, option-click, ctrl-click
+# ===========================================================================
+
+
+class TestModifierClick:
+    """Tests for modifier+click intents."""
+
+    def test_resolve_modifiers_shift(self):
+        assert _resolve_modifiers(["shift"]) == ["shift"]
+
+    def test_resolve_modifiers_cmd(self):
+        assert _resolve_modifiers(["cmd"]) == ["command"]
+
+    def test_resolve_modifiers_command(self):
+        assert _resolve_modifiers(["command"]) == ["command"]
+
+    def test_resolve_modifiers_opt(self):
+        assert _resolve_modifiers(["opt"]) == ["option"]
+
+    def test_resolve_modifiers_option(self):
+        assert _resolve_modifiers(["option"]) == ["option"]
+
+    def test_resolve_modifiers_alt(self):
+        assert _resolve_modifiers(["alt"]) == ["option"]
+
+    def test_resolve_modifiers_ctrl(self):
+        assert _resolve_modifiers(["ctrl"]) == ["control"]
+
+    def test_resolve_modifiers_control(self):
+        assert _resolve_modifiers(["control"]) == ["control"]
+
+    @patch("nexus.act.resolve.raw_input")
+    def test_shift_click_coordinates(self, mock_input):
+        mock_input.modifier_click.return_value = {"ok": True}
+        result = do("shift-click 100,200")
+        mock_input.modifier_click.assert_called_once_with(100, 200, ["shift"])
+        assert result["ok"] is True
+
+    @patch("nexus.act.resolve.raw_input")
+    def test_cmd_click_coordinates(self, mock_input):
+        mock_input.modifier_click.return_value = {"ok": True}
+        result = do("cmd-click 300,400")
+        mock_input.modifier_click.assert_called_once_with(300, 400, ["command"])
+
+    @patch("nexus.act.resolve.raw_input")
+    def test_option_click_coordinates(self, mock_input):
+        mock_input.modifier_click.return_value = {"ok": True}
+        result = do("option-click 50,60")
+        mock_input.modifier_click.assert_called_once_with(50, 60, ["option"])
+
+    @patch("nexus.act.resolve.raw_input")
+    def test_ctrl_click_coordinates(self, mock_input):
+        mock_input.modifier_click.return_value = {"ok": True}
+        result = do("ctrl-click 10,20")
+        mock_input.modifier_click.assert_called_once_with(10, 20, ["control"])
+
+    @patch("nexus.act.resolve.raw_input")
+    def test_command_click_coordinates(self, mock_input):
+        mock_input.modifier_click.return_value = {"ok": True}
+        result = do("command-click 10,20")
+        mock_input.modifier_click.assert_called_once_with(10, 20, ["command"])
+
+    @patch("nexus.act.resolve.raw_input")
+    @patch("nexus.sense.access.find_elements")
+    def test_shift_click_element(self, mock_find, mock_input):
+        mock_find.return_value = [
+            {"label": "file.txt", "role": "text", "_ax_role": "AXStaticText",
+             "pos": (100, 200), "size": (80, 20)}
+        ]
+        mock_input.modifier_click.return_value = {"ok": True}
+        result = do("shift-click file.txt")
+        mock_input.modifier_click.assert_called_once_with(140, 210, ["shift"])
+        assert result["ok"] is True
+        assert result.get("modifiers") == ["shift"]
+
+    @patch("nexus.sense.access.find_elements")
+    def test_shift_click_element_not_found(self, mock_find):
+        mock_find.return_value = []
+        result = do("shift-click Nonexistent")
+        assert result["ok"] is False
+        assert "not found" in result["error"]
+
+    def test_normalize_preserves_shift_click(self):
+        """Modifier-click verbs should NOT be normalized away by synonyms."""
+        assert _normalize_action("shift-click Save") == "shift-click Save"
+        assert _normalize_action("cmd-click Item") == "cmd-click Item"
+
+
+# ===========================================================================
+# TestElementDrag — drag <element> to <element>
+# ===========================================================================
+
+
+class TestElementDrag:
+    """Tests for element-based drag — 'drag X to Y'."""
+
+    @patch("nexus.act.resolve.raw_input")
+    def test_coordinate_drag(self, mock_input):
+        mock_input.drag.return_value = {"ok": True, "action": "drag"}
+        result = _handle_drag("100,200 to 300,400")
+        mock_input.drag.assert_called_once_with(100, 200, 300, 400)
+        assert result["ok"] is True
+
+    @patch("nexus.act.resolve.raw_input")
+    @patch("nexus.sense.access.find_elements")
+    def test_element_drag(self, mock_find, mock_input):
+        def find_side_effect(name, pid=None):
+            if "file" in name.lower():
+                return [{"label": "file.txt", "pos": (50, 100), "size": (80, 20)}]
+            if "trash" in name.lower():
+                return [{"label": "Trash", "pos": (400, 500), "size": (60, 60)}]
+            return []
+        mock_find.side_effect = find_side_effect
+        mock_input.drag.return_value = {"ok": True}
+        result = _handle_drag("file.txt to Trash")
+        mock_input.drag.assert_called_once_with(90, 110, 430, 530)
+        assert result["ok"] is True
+        assert result["from_element"] == "file.txt"
+        assert result["to_element"] == "Trash"
+
+    @patch("nexus.sense.access.find_elements")
+    def test_element_drag_source_not_found(self, mock_find):
+        mock_find.return_value = []
+        result = _handle_drag("missing to Trash")
+        assert result["ok"] is False
+        assert "source" in result["error"].lower()
+
+    @patch("nexus.sense.access.find_elements")
+    def test_element_drag_target_not_found(self, mock_find):
+        def find_side_effect(name, pid=None):
+            if "file" in name.lower():
+                return [{"label": "file.txt", "pos": (50, 100), "size": (80, 20)}]
+            return []
+        mock_find.side_effect = find_side_effect
+        result = _handle_drag("file.txt to missing")
+        assert result["ok"] is False
+        assert "target" in result["error"].lower()
+
+    def test_drag_bad_format(self):
+        result = _handle_drag("something random")
+        assert result["ok"] is False
+        assert "format" in result["error"].lower()
+
+    @patch("nexus.act.resolve.raw_input")
+    def test_drag_via_do(self, mock_input):
+        mock_input.drag.return_value = {"ok": True, "action": "drag"}
+        result = do("drag 10,20 to 30,40")
+        mock_input.drag.assert_called_once_with(10, 20, 30, 40)
+
+
+# ===========================================================================
+# TestReadTable — structured table extraction
+# ===========================================================================
+
+
+class TestReadTable:
+    """Tests for read table getter intent."""
+
+    @patch("nexus.sense.access.find_tables")
+    def test_read_table_no_tables(self, mock_find):
+        mock_find.return_value = []
+        result = _handle_read_table()
+        assert result["ok"] is True
+        assert "No tables" in result["text"]
+
+    @patch("nexus.sense.access.find_tables")
+    def test_read_table_with_data(self, mock_find):
+        mock_find.return_value = [{
+            "title": "Users",
+            "headers": ["Name", "Email"],
+            "rows": [["Alice", "alice@x.com"], ["Bob", "bob@x.com"]],
+            "num_rows": 2,
+            "num_cols": 2,
+        }]
+        result = _handle_read_table()
+        assert result["ok"] is True
+        assert "Users" in result["text"]
+        assert "Alice" in result["text"]
+        assert "Bob" in result["text"]
+
+    @patch("nexus.sense.access.find_tables")
+    def test_read_table_via_do(self, mock_find):
+        mock_find.return_value = []
+        result = do("read table")
+        assert result["ok"] is True
+
+    @patch("nexus.sense.access.find_tables")
+    def test_get_table_via_do(self, mock_find):
+        mock_find.return_value = []
+        result = do("get table")
+        assert result["ok"] is True
+
+
+# ===========================================================================
+# TestReadList — structured list extraction
+# ===========================================================================
+
+
+class TestReadList:
+    """Tests for read list getter intent."""
+
+    @patch("nexus.sense.access.find_lists")
+    def test_read_list_no_lists(self, mock_find):
+        mock_find.return_value = []
+        result = _handle_read_list()
+        assert result["ok"] is True
+        assert "No lists" in result["text"]
+
+    @patch("nexus.sense.access.find_lists")
+    def test_read_list_with_items(self, mock_find):
+        mock_find.return_value = [{
+            "title": "Files",
+            "type": "list",
+            "items": [
+                {"index": 0, "label": "document.pdf"},
+                {"index": 1, "label": "photo.jpg"},
+                {"index": 2, "label": "notes.txt", "selected": True},
+            ],
+            "count": 3,
+        }]
+        result = _handle_read_list()
+        assert result["ok"] is True
+        assert "Files" in result["text"]
+        assert "document.pdf" in result["text"]
+        assert "selected" in result["text"]
+
+    @patch("nexus.sense.access.find_lists")
+    def test_read_list_via_do(self, mock_find):
+        mock_find.return_value = []
+        result = do("read list")
+        assert result["ok"] is True
+
+    @patch("nexus.sense.access.find_lists")
+    def test_get_list_via_do(self, mock_find):
+        mock_find.return_value = []
+        result = do("get list")
+        assert result["ok"] is True
+
+
+# ===========================================================================
+# TestTableFormatting — _format_table and _format_list in fusion.py
+# ===========================================================================
+
+
+class TestTableFormatting:
+    """Tests for table/list ASCII formatting in fusion.py."""
+
+    def test_format_table_basic(self):
+        from nexus.sense.fusion import _format_table
+        tbl = {
+            "title": "Scores",
+            "headers": ["Name", "Score"],
+            "rows": [["Alice", "95"], ["Bob", "87"]],
+            "num_rows": 2,
+            "num_cols": 2,
+        }
+        text = _format_table(tbl)
+        assert "Scores" in text
+        assert "2 cols x 2 rows" in text
+        assert "Alice" in text
+        assert "Bob" in text
+        assert "|" in text  # Table borders
+
+    def test_format_table_empty(self):
+        from nexus.sense.fusion import _format_table
+        tbl = {
+            "title": "",
+            "headers": [],
+            "rows": [],
+            "num_rows": 0,
+            "num_cols": 0,
+        }
+        text = _format_table(tbl)
+        assert "empty" in text
+
+    def test_format_table_truncation(self):
+        from nexus.sense.fusion import _format_table
+        tbl = {
+            "title": "Big",
+            "headers": ["ID"],
+            "rows": [[str(i)] for i in range(25)],
+            "num_rows": 25,
+            "num_cols": 1,
+        }
+        text = _format_table(tbl)
+        assert "5 more rows" in text
+
+    def test_format_list_basic(self):
+        from nexus.sense.fusion import _format_list
+        lst = {
+            "title": "Recent",
+            "type": "list",
+            "items": [
+                {"index": 0, "label": "item1"},
+                {"index": 1, "label": "item2"},
+            ],
+            "count": 2,
+        }
+        text = _format_list(lst)
+        assert "Recent" in text
+        assert "2 items" in text
+        assert "1. item1" in text
+        assert "2. item2" in text
+
+    def test_format_list_selected_items(self):
+        from nexus.sense.fusion import _format_list
+        lst = {
+            "title": "",
+            "type": "list",
+            "items": [
+                {"index": 0, "label": "a", "selected": True},
+                {"index": 1, "label": "b"},
+            ],
+            "count": 2,
+        }
+        text = _format_list(lst)
+        assert "*selected*" in text
+
+    def test_format_list_outline_type(self):
+        from nexus.sense.fusion import _format_list
+        lst = {
+            "title": "Tree",
+            "type": "outline",
+            "items": [{"index": 0, "label": "root"}],
+            "count": 1,
+        }
+        text = _format_list(lst)
+        assert "Outline" in text
+
+
+# ===========================================================================
+# TestAccessTableList — table/list parsing in access.py
+# ===========================================================================
+
+
+class TestAccessTableList:
+    """Tests for read_table and read_list in access.py with mocked AX elements."""
+
+    @patch("nexus.sense.access.ax_attr")
+    def test_read_table_non_table_role(self, mock_attr):
+        from nexus.sense.access import read_table
+        mock_attr.return_value = "AXButton"
+        result = read_table(MagicMock())
+        assert result is None
+
+    @patch("nexus.sense.access.ax_attr")
+    def test_read_list_non_list_role(self, mock_attr):
+        from nexus.sense.access import read_list
+        mock_attr.return_value = "AXButton"
+        result = read_list(MagicMock())
+        assert result is None
+
+    def test_cell_text_extraction(self):
+        from nexus.sense.access import _cell_text
+        mock_cell = MagicMock()
+        with patch("nexus.sense.access.ax_attr") as mock_attr:
+            mock_attr.side_effect = lambda el, attr: {
+                "AXValue": "hello",
+            }.get(attr)
+            text = _cell_text(mock_cell)
+            assert text == "hello"
+
+    def test_cell_text_falls_back_to_title(self):
+        from nexus.sense.access import _cell_text
+        mock_cell = MagicMock()
+        with patch("nexus.sense.access.ax_attr") as mock_attr:
+            mock_attr.side_effect = lambda el, attr: {
+                "AXValue": None,
+                "AXTitle": "Title Text",
+            }.get(attr)
+            text = _cell_text(mock_cell)
+            assert text == "Title Text"
+
+
+# ===========================================================================
+# TestInputHover — low-level hover in input.py
+# ===========================================================================
+
+
+class TestInputHover:
+    """Tests for hover and modifier_click in input.py."""
+
+    @patch("pyautogui.moveTo")
+    def test_hover_moves_mouse(self, mock_move):
+        from nexus.act.input import hover
+        result = hover(100, 200)
+        mock_move.assert_called_once_with(100, 200)
+        assert result["ok"] is True
+        assert result["action"] == "hover"
+
+    @patch("pyautogui.keyDown")
+    @patch("pyautogui.click")
+    @patch("pyautogui.keyUp")
+    def test_modifier_click_shift(self, mock_up, mock_click, mock_down):
+        from nexus.act.input import modifier_click
+        result = modifier_click(100, 200, ["shift"])
+        mock_down.assert_called_with("shift")
+        mock_click.assert_called_with(100, 200)
+        mock_up.assert_called_with("shift")
+        assert result["ok"] is True
+        assert result["modifiers"] == ["shift"]
+
+    @patch("pyautogui.keyDown")
+    @patch("pyautogui.click")
+    @patch("pyautogui.keyUp")
+    def test_modifier_click_multi(self, mock_up, mock_click, mock_down):
+        from nexus.act.input import modifier_click
+        result = modifier_click(50, 60, ["command", "shift"])
+        assert mock_down.call_count == 2
+        assert mock_up.call_count == 2
+        # keyDown called in order: command, shift
+        mock_down.assert_any_call("command")
+        mock_down.assert_any_call("shift")
+        # keyUp called in reverse: shift, command
+        assert mock_up.call_args_list[0] == call("shift")
+        assert mock_up.call_args_list[1] == call("command")
+
+
+# ===========================================================================
+# TestTripleClick
+# ===========================================================================
+
+
+class TestTripleClick:
+    """Tests for triple-click support."""
+
+    @patch("pyautogui.click")
+    def test_triple_click_input(self, mock_click):
+        from nexus.act.input import triple_click
+        result = triple_click(100, 200)
+        mock_click.assert_called_once_with(100, 200, clicks=3)
+        assert result["ok"] is True
+        assert result["action"] == "triple_click"
+
+    @patch("nexus.act.resolve.native")
+    @patch("nexus.act.resolve.raw_input")
+    def test_triple_click_routing(self, mock_raw, mock_native):
+        """do('triple-click Save') routes to _handle_click with triple=True."""
+        mock_native.click_element.return_value = {"ok": True, "at": [100, 200]}
+        mock_raw.triple_click.return_value = {"ok": True}
+        result = do("triple-click Save")
+        mock_raw.triple_click.assert_called_once_with(100, 200)
+
+    @patch("nexus.act.resolve.native")
+    @patch("nexus.act.resolve.raw_input")
+    def test_tripleclick_variant(self, mock_raw, mock_native):
+        mock_native.click_element.return_value = {"ok": True, "at": [50, 60]}
+        mock_raw.triple_click.return_value = {"ok": True}
+        result = do("tripleclick Save")
+        mock_raw.triple_click.assert_called_once()
+
+    @patch("nexus.act.resolve.native")
+    @patch("nexus.act.resolve.raw_input")
+    def test_tclick_variant(self, mock_raw, mock_native):
+        mock_native.click_element.return_value = {"ok": True, "at": [50, 60]}
+        mock_raw.triple_click.return_value = {"ok": True}
+        result = do("tclick Save")
+        mock_raw.triple_click.assert_called_once()
+
+    @patch("nexus.act.resolve.raw_input")
+    def test_triple_click_coordinates(self, mock_raw):
+        mock_raw.triple_click.return_value = {"ok": True}
+        result = do("triple-click 100,200")
+        mock_raw.triple_click.assert_called_once_with(100, 200)
+
+    @patch("nexus.act.resolve.raw_input")
+    def test_triple_click_no_target(self, mock_raw):
+        """Triple-click with no target clicks at mouse position."""
+        mock_raw.mouse_position.return_value = {"x": 50, "y": 60}
+        mock_raw.triple_click.return_value = {"ok": True}
+        result = do("triple-click")
+        mock_raw.triple_click.assert_called_once_with(50, 60)
+
+
+# ===========================================================================
+# TestRoleMapConsolidation
+# ===========================================================================
+
+
+class TestRoleMapConsolidation:
+    """Tests that ROLE_MAP and ROLE_WORDS are consistent and used everywhere."""
+
+    def test_role_map_has_all_core_roles(self):
+        expected = {"button", "link", "tab", "menu", "field", "checkbox",
+                    "radio", "text", "image", "slider", "switch", "toggle"}
+        assert expected.issubset(set(ROLE_MAP.keys()))
+
+    def test_role_words_matches_role_map_keys(self):
+        assert ROLE_WORDS == frozenset(ROLE_MAP.keys())
+
+    def test_role_map_values_all_ax_prefixed(self):
+        for role, ax_role in ROLE_MAP.items():
+            assert ax_role.startswith("AX"), f"{role} → {ax_role} missing AX prefix"
+
+    def test_icon_maps_to_ax_image(self):
+        assert ROLE_MAP["icon"] == "AXImage"
+
+    def test_label_maps_to_ax_static_text(self):
+        assert ROLE_MAP["label"] == "AXStaticText"
+
+    def test_toggle_maps_to_ax_switch(self):
+        assert ROLE_MAP["toggle"] == "AXSwitch"
+
+
+# ===========================================================================
+# TestScrollTargeting
+# ===========================================================================
+
+
+@patch("nexus.act.resolve.raw_input")
+class TestScrollTargeting:
+    """Tests for scroll-in-element and scroll-until patterns."""
+
+    def test_scroll_down_in_element(self, mock_raw):
+        """'scroll down in file list' scrolls at element center."""
+        mock_raw.scroll.return_value = {"ok": True}
+        with patch("nexus.sense.access.find_elements") as mock_find:
+            mock_find.return_value = [
+                {"label": "file list", "pos": (100, 200), "size": (300, 400)}
+            ]
+            result = _handle_scroll("down in file list")
+            mock_raw.scroll.assert_called_once_with(-3, x=250, y=400)
+
+    def test_scroll_up_5_in_element(self, mock_raw):
+        mock_raw.scroll.return_value = {"ok": True}
+        with patch("nexus.sense.access.find_elements") as mock_find:
+            mock_find.return_value = [
+                {"label": "sidebar", "pos": (0, 0), "size": (200, 600)}
+            ]
+            result = _handle_scroll("up 5 in sidebar")
+            mock_raw.scroll.assert_called_once_with(5, x=100, y=300)
+
+    def test_scroll_in_element_not_found(self, mock_raw):
+        with patch("nexus.sense.access.find_elements") as mock_find:
+            mock_find.return_value = []
+            result = _handle_scroll("down in nonexistent")
+            assert result["ok"] is False
+            assert "not found" in result["error"]
+
+    def test_scroll_until_found_immediately(self, mock_raw):
+        """If element is already visible, no scrolling needed."""
+        mock_raw.scroll.return_value = {"ok": True}
+        with patch("nexus.sense.access.find_elements") as mock_find:
+            mock_find.return_value = [
+                {"label": "Save", "role": "button", "pos": (100, 200), "size": (80, 30)}
+            ]
+            result = _handle_scroll("until Save appears")
+            assert result["ok"] is True
+            assert result["action"] == "scroll_until"
+            assert result["scrolls"] == 0
+            mock_raw.scroll.assert_not_called()
+
+    def test_scroll_until_found_after_scrolls(self, mock_raw):
+        mock_raw.scroll.return_value = {"ok": True}
+        call_count = [0]
+        def mock_find_fn(target, pid=None):
+            call_count[0] += 1
+            if call_count[0] >= 3:
+                return [{"label": "Submit", "role": "button", "pos": (100, 200), "size": (80, 30)}]
+            return []
+        with patch("nexus.sense.access.find_elements", side_effect=mock_find_fn):
+            with patch("time.sleep"):
+                result = _handle_scroll("until Submit")
+                assert result["ok"] is True
+                assert result["scrolls"] == 2
+                assert mock_raw.scroll.call_count == 2
+
+    def test_scroll_until_timeout(self, mock_raw):
+        mock_raw.scroll.return_value = {"ok": True}
+        with patch("nexus.sense.access.find_elements") as mock_find:
+            mock_find.return_value = []
+            with patch("time.sleep"):
+                result = _handle_scroll("until NonExistent")
+                assert result["ok"] is False
+                assert "not found after" in result["error"]
+
+    def test_scroll_until_with_appears_suffix(self, mock_raw):
+        """'scroll until Save appears' should work same as 'scroll until Save'."""
+        mock_raw.scroll.return_value = {"ok": True}
+        with patch("nexus.sense.access.find_elements") as mock_find:
+            mock_find.return_value = [
+                {"label": "Save", "role": "button", "pos": (10, 20), "size": (50, 30)}
+            ]
+            result = _handle_scroll("until Save appears")
+            assert result["ok"] is True
+
+    def test_scroll_down_still_works(self, mock_raw):
+        """Normal scroll still works after adding new patterns."""
+        mock_raw.scroll.return_value = {"ok": True}
+        _handle_scroll("down")
+        mock_raw.scroll.assert_called_once_with(-3)
+
+    def test_scroll_up_10_still_works(self, mock_raw):
+        mock_raw.scroll.return_value = {"ok": True}
+        _handle_scroll("up 10")
+        mock_raw.scroll.assert_called_once_with(10)
+
+    def test_do_scroll_until_routing(self, mock_raw):
+        """do('scroll until Save') routes correctly."""
+        mock_raw.scroll.return_value = {"ok": True}
+        with patch("nexus.sense.access.find_elements") as mock_find:
+            mock_find.return_value = [
+                {"label": "Save", "role": "button", "pos": (10, 20), "size": (50, 30)}
+            ]
+            result = do("scroll until Save")
+            assert result["ok"] is True
+
+    def test_do_scroll_down_in_routing(self, mock_raw):
+        """do('scroll down in sidebar') routes correctly."""
+        mock_raw.scroll.return_value = {"ok": True}
+        with patch("nexus.sense.access.find_elements") as mock_find:
+            mock_find.return_value = [
+                {"label": "sidebar", "pos": (0, 0), "size": (200, 600)}
+            ]
+            result = do("scroll down in sidebar")
+            assert result["ok"] is True
+
+
+# ===========================================================================
+# TestParseContainer
+# ===========================================================================
+
+
+class TestParseContainer:
+    """Tests for _parse_container — container-scoped click parsing."""
+
+    def test_basic_row_with(self):
+        result = _parse_container("delete in the row with Alice")
+        assert result == ("delete", "Alice", None)
+
+    def test_row_containing(self):
+        result = _parse_container("button in the row containing Bob")
+        assert result == ("button", "Bob", None)
+
+    def test_row_that_has(self):
+        result = _parse_container("checkbox in row that has Admin")
+        assert result == ("checkbox", "Admin", None)
+
+    def test_row_that_contains(self):
+        result = _parse_container("delete in row that contains alice@example.com")
+        assert result == ("delete", "alice@example.com", None)
+
+    def test_row_number(self):
+        result = _parse_container("button in row 3")
+        assert result == ("button", None, 3)
+
+    def test_row_number_with_the(self):
+        result = _parse_container("delete in the row 5")
+        assert result == ("delete", None, 5)
+
+    def test_no_container(self):
+        """Regular click targets don't parse as containers."""
+        assert _parse_container("Save button") is None
+        assert _parse_container("the 2nd button") is None
+        assert _parse_container("button near search") is None
+
+    def test_leading_the_stripped(self):
+        result = _parse_container("the checkbox in the row with Alice")
+        assert result == ("checkbox", "Alice", None)
+
+    def test_multi_word_target(self):
+        result = _parse_container("delete button in the row with Alice")
+        assert result == ("delete button", "Alice", None)
+
+    def test_multi_word_reference(self):
+        result = _parse_container("delete in the row with John Doe")
+        assert result == ("delete", "John Doe", None)
+
+
+# ===========================================================================
+# TestClickInContainer
+# ===========================================================================
+
+
+class TestClickInContainer:
+    """Tests for _click_in_container — clicking within table rows."""
+
+    def _make_mock_table(self, rows_data, row_refs):
+        """Create a mock table dict matching find_tables() output."""
+        headers = ["Name", "Email", "Action"]
+        return {
+            "title": "Users",
+            "headers": headers,
+            "rows": rows_data,
+            "row_refs": row_refs,
+            "num_rows": len(rows_data),
+            "num_cols": len(headers),
+        }
+
+    @patch("nexus.act.resolve.raw_input")
+    def test_click_by_row_content(self, mock_raw):
+        """Click a button in the row containing 'Alice'."""
+        mock_raw.click.return_value = {"ok": True}
+
+        row_refs = [MagicMock(), MagicMock()]
+        rows_data = [
+            ["Alice", "alice@x.com", ""],
+            ["Bob", "bob@x.com", ""],
+        ]
+        table = self._make_mock_table(rows_data, row_refs)
+
+        # Mock walk_tree to return a button inside the row
+        button_el = {
+            "role": "button", "label": "Delete", "_ax_role": "AXButton",
+            "pos": (500, 100), "size": (60, 30), "_ref": MagicMock(),
+        }
+
+        with patch("nexus.sense.access.find_tables", return_value=[table]):
+            with patch("nexus.sense.access.walk_tree", return_value=[button_el]):
+                with patch("nexus.sense.access.ax_actions", return_value=[]):
+                    result = _click_in_container(("button", "Alice", None))
+                    assert result["ok"] is True
+
+    @patch("nexus.act.resolve.raw_input")
+    def test_click_by_row_number(self, mock_raw):
+        """Click button in row 2."""
+        mock_raw.click.return_value = {"ok": True}
+
+        row_refs = [MagicMock(), MagicMock()]
+        rows_data = [["Alice", "a@x.com"], ["Bob", "b@x.com"]]
+        table = self._make_mock_table(rows_data, row_refs)
+
+        button_el = {
+            "role": "button", "label": "Edit", "_ax_role": "AXButton",
+            "pos": (500, 150), "size": (60, 30), "_ref": MagicMock(),
+        }
+
+        with patch("nexus.sense.access.find_tables", return_value=[table]):
+            with patch("nexus.sense.access.walk_tree", return_value=[button_el]):
+                with patch("nexus.sense.access.ax_actions", return_value=[]):
+                    result = _click_in_container(("button", None, 2))
+                    assert result["ok"] is True
+
+    def test_no_tables_found(self):
+        with patch("nexus.sense.access.find_tables", return_value=[]):
+            result = _click_in_container(("delete", "Alice", None))
+            assert result["ok"] is False
+            assert "No tables" in result["error"]
+
+    def test_row_not_found(self):
+        row_refs = [MagicMock()]
+        rows_data = [["Bob", "b@x.com"]]
+        table = self._make_mock_table(rows_data, row_refs)
+
+        with patch("nexus.sense.access.find_tables", return_value=[table]):
+            result = _click_in_container(("delete", "Alice", None))
+            assert result["ok"] is False
+            assert "Alice" in result["error"]
+
+    def test_row_number_out_of_range(self):
+        row_refs = [MagicMock()]
+        rows_data = [["Alice", "a@x.com"]]
+        table = self._make_mock_table(rows_data, row_refs)
+
+        with patch("nexus.sense.access.find_tables", return_value=[table]):
+            result = _click_in_container(("delete", None, 99))
+            assert result["ok"] is False
+            assert "99" in result["error"]
+
+    def test_target_not_in_row(self):
+        row_refs = [MagicMock()]
+        rows_data = [["Alice", "a@x.com"]]
+        table = self._make_mock_table(rows_data, row_refs)
+
+        # Row has a text element but no button
+        text_el = {
+            "role": "static text", "label": "Alice", "_ax_role": "AXStaticText",
+            "pos": (100, 100), "size": (80, 20),
+        }
+
+        with patch("nexus.sense.access.find_tables", return_value=[table]):
+            with patch("nexus.sense.access.walk_tree", return_value=[text_el]):
+                result = _click_in_container(("button", "Alice", None))
+                assert result["ok"] is False
+                assert "not found in the row" in result["error"]
+
+    @patch("nexus.act.resolve.native")
+    @patch("nexus.act.resolve.raw_input")
+    def test_do_routing_click_in_row(self, mock_raw, mock_native):
+        """do('click delete in the row with Alice') routes to container scoping."""
+        row_refs = [MagicMock()]
+        rows_data = [["Alice", "a@x.com"]]
+        table = {
+            "title": "", "headers": ["Name", "Email"],
+            "rows": rows_data, "row_refs": row_refs,
+            "num_rows": 1, "num_cols": 2,
+        }
+        button_el = {
+            "role": "button", "label": "delete", "_ax_role": "AXButton",
+            "pos": (500, 100), "size": (60, 30), "_ref": MagicMock(),
+        }
+        mock_raw.click.return_value = {"ok": True}
+
+        with patch("nexus.sense.access.find_tables", return_value=[table]):
+            with patch("nexus.sense.access.walk_tree", return_value=[button_el]):
+                with patch("nexus.sense.access.ax_actions", return_value=[]):
+                    result = do("click delete in the row with Alice")
+                    assert result["ok"] is True
+
+
+# ===========================================================================
+# TestDragAbsolute
+# ===========================================================================
+
+
+class TestDragAbsolute:
+    """Tests that drag uses absolute coordinates (mouseDown/moveTo/mouseUp)."""
+
+    @patch("pyautogui.mouseUp")
+    @patch("pyautogui.moveTo")
+    @patch("pyautogui.mouseDown")
+    def test_drag_uses_absolute_positioning(self, mock_down, mock_move, mock_up):
+        from nexus.act.input import drag
+        result = drag(100, 200, 300, 400, duration=0.5)
+        # First moveTo positions mouse at start
+        assert mock_move.call_count == 2
+        mock_move.assert_any_call(100, 200)
+        mock_move.assert_any_call(300, 400, duration=0.5)
+        mock_down.assert_called_once()
+        mock_up.assert_called_once()
+        assert result["ok"] is True
+        assert result["from"] == [100, 200]
+        assert result["to"] == [300, 400]
+
+
+class TestObserveIntents:
+    """Tests for do('observe ...') intent routing."""
+
+    @patch("nexus.sense.observe.start_observing", return_value={"ok": True, "pid": 42})
+    @patch("nexus.sense.access.frontmost_app", return_value={"pid": 42, "name": "Safari"})
+    def test_observe_start(self, mock_app, mock_start):
+        from nexus.act.resolve import do
+        result = do("observe start")
+        assert result["ok"] is True
+        mock_start.assert_called_once_with(42, "Safari")
+
+    @patch("nexus.sense.observe.start_observing", return_value={"ok": True, "pid": 42})
+    @patch("nexus.sense.access.frontmost_app", return_value={"pid": 42, "name": "Safari"})
+    def test_observe_no_args_defaults_to_start(self, mock_app, mock_start):
+        from nexus.act.resolve import do
+        result = do("observe")
+        assert result["ok"] is True
+        mock_start.assert_called_once()
+
+    @patch("nexus.sense.observe.stop_observing", return_value={"ok": True, "stopped": [42]})
+    def test_observe_stop(self, mock_stop):
+        from nexus.act.resolve import do
+        result = do("observe stop")
+        assert result["ok"] is True
+        mock_stop.assert_called_once()
+
+    @patch("nexus.sense.observe.drain_events", return_value=[])
+    def test_observe_clear(self, mock_drain):
+        from nexus.act.resolve import do
+        result = do("observe clear")
+        assert result["ok"] is True
+        assert result["action"] == "observe_clear"
+
+    @patch("nexus.sense.observe.status", return_value={"ok": True, "observing": [], "buffered": 0})
+    def test_observe_status(self, mock_status):
+        from nexus.act.resolve import do
+        result = do("observe status")
+        assert result["ok"] is True
+        mock_status.assert_called_once()
+
+    def test_observe_unknown_command(self):
+        from nexus.act.resolve import do
+        result = do("observe foobar")
+        assert result["ok"] is False
+        assert "Unknown" in result["error"]
+
+    @patch("nexus.sense.observe.start_observing", return_value={"ok": True, "pid": 42})
+    @patch("nexus.sense.access.frontmost_app", return_value={"pid": 42, "name": "Finder"})
+    def test_observe_on_synonym(self, mock_app, mock_start):
+        from nexus.act.resolve import do
+        result = do("observe on")
+        assert result["ok"] is True
+
+    @patch("nexus.sense.observe.stop_observing", return_value={"ok": True, "stopped": []})
+    def test_observe_off_synonym(self, mock_stop):
+        from nexus.act.resolve import do
+        result = do("observe off")
+        assert result["ok"] is True
+
+
+# ===========================================================================
+# TestHandleMinimize
+# ===========================================================================
+
+
+@patch("nexus.act.resolve.raw_input")
+@patch("nexus.act.resolve.native")
+class TestHandleMinimize:
+    """Tests for _handle_minimize — minimize windows."""
+
+    def test_minimize_no_args(self, mock_native, mock_raw_input):
+        mock_native.minimize_window.return_value = {"ok": True}
+        _handle_minimize("")
+        mock_native.minimize_window.assert_called_once()
+
+    def test_minimize_app_name(self, mock_native, mock_raw_input):
+        mock_native.minimize_window.return_value = {"ok": True}
+        _handle_minimize("Safari")
+        mock_native.minimize_window.assert_called_once_with(app_name="Safari")
+
+    def test_minimize_window_keyword(self, mock_native, mock_raw_input):
+        mock_native.minimize_window.return_value = {"ok": True}
+        _handle_minimize("window")
+        mock_native.minimize_window.assert_called_once()
+
+    def test_minimize_window_2(self, mock_native, mock_raw_input):
+        mock_native.minimize_window.return_value = {"ok": True}
+        _handle_minimize("window 2")
+        mock_native.minimize_window.assert_called_once_with(app_name=None, window_index=2)
+
+    def test_minimize_window_2_of_safari(self, mock_native, mock_raw_input):
+        mock_native.minimize_window.return_value = {"ok": True}
+        _handle_minimize("window 2 of Safari")
+        mock_native.minimize_window.assert_called_once_with(app_name="safari", window_index=2)
+
+    def test_minimize_window_3(self, mock_native, mock_raw_input):
+        mock_native.minimize_window.return_value = {"ok": True}
+        _handle_minimize("window 3")
+        mock_native.minimize_window.assert_called_once_with(app_name=None, window_index=3)
+
+
+# ===========================================================================
+# TestHandleRestore
+# ===========================================================================
+
+
+@patch("nexus.act.resolve.raw_input")
+@patch("nexus.act.resolve.native")
+class TestHandleRestore:
+    """Tests for _handle_restore — unminimize windows."""
+
+    def test_restore_no_args(self, mock_native, mock_raw_input):
+        mock_native.unminimize_window.return_value = {"ok": True}
+        _handle_restore("")
+        mock_native.unminimize_window.assert_called_once()
+
+    def test_restore_app_name(self, mock_native, mock_raw_input):
+        mock_native.unminimize_window.return_value = {"ok": True}
+        _handle_restore("Safari")
+        mock_native.unminimize_window.assert_called_once_with(app_name="Safari")
+
+    def test_restore_window_keyword(self, mock_native, mock_raw_input):
+        mock_native.unminimize_window.return_value = {"ok": True}
+        _handle_restore("window")
+        mock_native.unminimize_window.assert_called_once()
+
+    def test_restore_chrome(self, mock_native, mock_raw_input):
+        mock_native.unminimize_window.return_value = {"ok": True}
+        _handle_restore("Chrome")
+        mock_native.unminimize_window.assert_called_once_with(app_name="Chrome")
+
+
+# ===========================================================================
+# TestHandleResize
+# ===========================================================================
+
+
+@patch("nexus.act.resolve.raw_input")
+@patch("nexus.act.resolve.native")
+class TestHandleResize:
+    """Tests for _handle_resize — resize windows."""
+
+    @patch("nexus.act.input.screen_size", return_value={"width": 1920, "height": 1080})
+    def test_resize_absolute(self, mock_screen, mock_native, mock_raw_input):
+        mock_native.resize_window.return_value = {"ok": True}
+        _handle_resize("to 800x600")
+        mock_native.resize_window.assert_called_once_with(app_name=None, w=800, h=600)
+
+    @patch("nexus.act.input.screen_size", return_value={"width": 1920, "height": 1080})
+    def test_resize_no_to(self, mock_screen, mock_native, mock_raw_input):
+        mock_native.resize_window.return_value = {"ok": True}
+        _handle_resize("800x600")
+        mock_native.resize_window.assert_called_once_with(app_name=None, w=800, h=600)
+
+    @patch("nexus.act.input.screen_size", return_value={"width": 1920, "height": 1080})
+    def test_resize_with_X(self, mock_screen, mock_native, mock_raw_input):
+        mock_native.resize_window.return_value = {"ok": True}
+        _handle_resize("to 800X600")
+        mock_native.resize_window.assert_called_once_with(app_name=None, w=800, h=600)
+
+    @patch("nexus.act.input.screen_size", return_value={"width": 1920, "height": 1080})
+    def test_resize_app_name(self, mock_screen, mock_native, mock_raw_input):
+        mock_native.resize_window.return_value = {"ok": True}
+        _handle_resize("Safari to 1200x800")
+        mock_native.resize_window.assert_called_once_with(app_name="Safari", w=1200, h=800)
+
+    @patch("nexus.act.input.screen_size", return_value={"width": 1920, "height": 1080})
+    def test_resize_percentage_50(self, mock_screen, mock_native, mock_raw_input):
+        mock_native.resize_window.return_value = {"ok": True}
+        _handle_resize("to 50%")
+        mock_native.resize_window.assert_called_once_with(app_name=None, w=960, h=527)
+
+    @patch("nexus.act.input.screen_size", return_value={"width": 1920, "height": 1080})
+    def test_resize_percentage_75(self, mock_screen, mock_native, mock_raw_input):
+        mock_native.resize_window.return_value = {"ok": True}
+        _handle_resize("to 75%")
+        mock_native.resize_window.assert_called_once_with(app_name=None, w=1440, h=791)
+
+    @patch("nexus.act.input.screen_size", return_value={"width": 1920, "height": 1080})
+    def test_resize_app_percentage(self, mock_screen, mock_native, mock_raw_input):
+        mock_native.resize_window.return_value = {"ok": True}
+        _handle_resize("Safari to 75%")
+        mock_native.resize_window.assert_called_once_with(app_name="Safari", w=1440, h=791)
+
+    @patch("nexus.act.input.screen_size", return_value={"width": 1920, "height": 1080})
+    def test_resize_window_keyword(self, mock_screen, mock_native, mock_raw_input):
+        mock_native.resize_window.return_value = {"ok": True}
+        _handle_resize("window to 800x600")
+        mock_native.resize_window.assert_called_once_with(app_name=None, w=800, h=600)
+
+    @patch("nexus.act.input.screen_size", return_value={"width": 1920, "height": 1080})
+    def test_resize_window_2(self, mock_screen, mock_native, mock_raw_input):
+        mock_native.resize_window.return_value = {"ok": True}
+        _handle_resize("window 2 to 800x600")
+        mock_native.resize_window.assert_called_once_with(w=800, h=600, window_index=2)
+
+    @patch("nexus.act.input.screen_size", return_value={"width": 1920, "height": 1080})
+    def test_resize_with_comma(self, mock_screen, mock_native, mock_raw_input):
+        mock_native.resize_window.return_value = {"ok": True}
+        _handle_resize("to 800,600")
+        mock_native.resize_window.assert_called_once_with(app_name=None, w=800, h=600)
+
+    @patch("nexus.act.input.screen_size", return_value={"width": 1920, "height": 1080})
+    def test_resize_with_star(self, mock_screen, mock_native, mock_raw_input):
+        mock_native.resize_window.return_value = {"ok": True}
+        _handle_resize("to 800*600")
+        mock_native.resize_window.assert_called_once_with(app_name=None, w=800, h=600)
+
+    def test_resize_empty_fails(self, mock_native, mock_raw_input):
+        result = _handle_resize("")
+        assert result["ok"] is False
+
+    @patch("nexus.act.input.screen_size", return_value={"width": 1920, "height": 1080})
+    def test_resize_unparseable_fails(self, mock_screen, mock_native, mock_raw_input):
+        result = _handle_resize("to banana")
+        assert result["ok"] is False
+
+    @patch("nexus.act.input.screen_size", return_value={"width": 1920, "height": 1080})
+    def test_resize_percentage_100(self, mock_screen, mock_native, mock_raw_input):
+        mock_native.resize_window.return_value = {"ok": True}
+        _handle_resize("to 100%")
+        mock_native.resize_window.assert_called_once_with(app_name=None, w=1920, h=1055)
+
+    @patch("nexus.act.input.screen_size", return_value={"width": 1920, "height": 1080})
+    def test_resize_percentage_25(self, mock_screen, mock_native, mock_raw_input):
+        mock_native.resize_window.return_value = {"ok": True}
+        _handle_resize("to 25%")
+        mock_native.resize_window.assert_called_once_with(app_name=None, w=480, h=263)
+
+
+# ===========================================================================
+# TestHandleFullscreen
+# ===========================================================================
+
+
+@patch("nexus.act.resolve.raw_input")
+@patch("nexus.act.resolve.native")
+class TestHandleFullscreen:
+    """Tests for _handle_fullscreen — true macOS fullscreen toggle."""
+
+    def test_fullscreen_no_args(self, mock_native, mock_raw_input):
+        mock_native.fullscreen_window.return_value = {"ok": True}
+        _handle_fullscreen("")
+        mock_native.fullscreen_window.assert_called_once()
+
+    def test_fullscreen_app_name(self, mock_native, mock_raw_input):
+        mock_native.fullscreen_window.return_value = {"ok": True}
+        _handle_fullscreen("Safari")
+        mock_native.fullscreen_window.assert_called_once_with(app_name="Safari")
+
+    def test_fullscreen_window_keyword(self, mock_native, mock_raw_input):
+        mock_native.fullscreen_window.return_value = {"ok": True}
+        _handle_fullscreen("window")
+        mock_native.fullscreen_window.assert_called_once()
+
+    def test_fullscreen_chrome(self, mock_native, mock_raw_input):
+        mock_native.fullscreen_window.return_value = {"ok": True}
+        _handle_fullscreen("Chrome")
+        mock_native.fullscreen_window.assert_called_once_with(app_name="Chrome")
+
+
+# ===========================================================================
+# TestWindowInfo
+# ===========================================================================
+
+
+@patch("nexus.act.resolve.raw_input")
+@patch("nexus.act.resolve.native")
+class TestWindowInfo:
+    """Tests for window info getter intents."""
+
+    def test_where_is_safari(self, mock_native, mock_raw_input):
+        mock_native.window_info.return_value = {"ok": True}
+        result = do("where is Safari?")
+        mock_native.window_info.assert_called_once_with(app_name="Safari")
+
+    def test_wheres_chrome(self, mock_native, mock_raw_input):
+        mock_native.window_info.return_value = {"ok": True}
+        result = do("where's Chrome?")
+        mock_native.window_info.assert_called_once_with(app_name="Chrome")
+
+    def test_where_is_no_question_mark(self, mock_native, mock_raw_input):
+        mock_native.window_info.return_value = {"ok": True}
+        result = do("where is Terminal")
+        mock_native.window_info.assert_called_once_with(app_name="Terminal")
+
+    def test_window_info_no_app(self, mock_native, mock_raw_input):
+        mock_native.window_info.return_value = {"ok": True}
+        result = do("window info")
+        mock_native.window_info.assert_called_once()
+
+    def test_get_window_info(self, mock_native, mock_raw_input):
+        mock_native.window_info.return_value = {"ok": True}
+        result = do("get window info")
+        mock_native.window_info.assert_called_once()

@@ -24,6 +24,68 @@ from Quartz import (
 )
 
 
+# ---------------------------------------------------------------------------
+# Tree cache — avoids redundant walks within a short window (snap + action + snap)
+# ---------------------------------------------------------------------------
+
+import time as _time
+
+_tree_cache = {}
+_CACHE_TTL = 1.0  # seconds
+
+
+def _cache_get(key):
+    """Get a cached result if still fresh."""
+    if key in _tree_cache:
+        ts, result = _tree_cache[key]
+        if _time.time() - ts < _CACHE_TTL:
+            return result
+    return None
+
+
+def _cache_set(key, result):
+    """Cache a result with current timestamp."""
+    _tree_cache[key] = (_time.time(), result)
+
+
+def invalidate_cache():
+    """Clear the tree cache (call after mutations if needed)."""
+    _tree_cache.clear()
+
+
+# ---------------------------------------------------------------------------
+# Group roles — containers that provide structural context in see() output
+# ---------------------------------------------------------------------------
+
+# Always create a group heading (with or without label)
+_ALWAYS_GROUP_ROLES = {"AXToolbar", "AXSheet", "AXDialog", "AXTabGroup"}
+
+# Create a group heading only when they have a meaningful label
+_LABELED_GROUP_ROLES = {"AXGroup", "AXScrollArea", "AXSplitGroup"}
+
+_GROUP_DISPLAY = {
+    "AXToolbar": "Toolbar",
+    "AXSheet": "Sheet",
+    "AXDialog": "Dialog",
+    "AXTabGroup": "Tabs",
+    "AXGroup": "",
+    "AXScrollArea": "",
+    "AXSplitGroup": "Split",
+}
+
+
+def _make_group_label(role, label):
+    """Create a display-friendly group heading from AX role + label."""
+    display = _GROUP_DISPLAY.get(role, "")
+    if display and label:
+        return f"{display}: {label}"
+    if display:
+        return display
+    if label:
+        return label
+    return None
+
+
 # Known Electron bundle IDs — these need AXManualAccessibility
 _ELECTRON_BUNDLE_IDS = {
     "com.microsoft.VSCode",
@@ -301,8 +363,23 @@ def _element_to_dict(el, focused=False, content=False):
     return node
 
 
-def walk_tree(element, max_depth=8, depth=0, max_elements=150):
-    """Walk accessibility tree, return flat list of meaningful elements."""
+def walk_tree(element, max_depth=8, depth=0, max_elements=150,
+              _tables=None, _lists=None, _group=None):
+    """Walk accessibility tree, return flat list of meaningful elements.
+
+    Args:
+        element: Root AXUIElement to walk.
+        max_depth: Maximum recursion depth.
+        depth: Current depth (internal).
+        max_elements: Maximum elements to collect.
+        _tables: If provided, collect AXTable refs here (single-pass).
+        _lists: If provided, collect AXList/AXOutline refs here (single-pass).
+        _group: Current container group label (internal, for hierarchy).
+
+    Returns:
+        Flat list of element dicts, annotated with '_group' when inside
+        a meaningful container (toolbar, dialog, etc.).
+    """
     if depth > max_depth:
         return []
 
@@ -312,11 +389,28 @@ def walk_tree(element, max_depth=8, depth=0, max_elements=150):
     desc = ax_attr(element, "AXDescription") or ""
     label = title or desc
 
+    # Collect tables/lists for structured rendering (skip recursing into them)
+    if _tables is not None and role == "AXTable":
+        _tables.append(element)
+        return results
+    if _lists is not None and role in ("AXList", "AXOutline"):
+        _lists.append(element)
+        return results
+
+    # Track group context for hierarchy
+    current_group = _group
+    if role in _ALWAYS_GROUP_ROLES:
+        current_group = _make_group_label(role, label) or current_group
+    elif role in _LABELED_GROUP_ROLES and label:
+        current_group = _make_group_label(role, label) or current_group
+
     # Include if interactive or has a label
     if role in INTERACTIVE_ROLES or label:
         node = _element_to_dict(element)
         # Skip noise: unlabeled static text, tiny elements
         if node["label"] or node["role"] not in ("static text", "image", "group"):
+            if current_group:
+                node["_group"] = current_group
             results.append(node)
 
     if len(results) >= max_elements:
@@ -326,11 +420,41 @@ def walk_tree(element, max_depth=8, depth=0, max_elements=150):
     children = ax_attr(element, "AXChildren")
     if children:
         for child in children:
-            results.extend(walk_tree(child, max_depth, depth + 1, max_elements))
+            results.extend(walk_tree(child, max_depth, depth + 1, max_elements,
+                                     _tables=_tables, _lists=_lists,
+                                     _group=current_group))
             if len(results) >= max_elements:
                 break
 
     return results[:max_elements]
+
+
+def _get_window(pid):
+    """Get the best window for a PID (focused > main > first). Returns (window, is_electron)."""
+    app = None
+
+    if pid is None:
+        app = frontmost_app()
+        if not app:
+            return None, False
+        pid = app["pid"]
+
+    bundle_id = _bundle_id_for_pid(pid, app)
+    is_electron = _is_electron(bundle_id)
+    if is_electron:
+        _ensure_electron_accessibility(pid)
+
+    app_ref = AXUIElementCreateApplication(pid)
+
+    window = ax_attr(app_ref, "AXFocusedWindow")
+    if not window:
+        window = ax_attr(app_ref, "AXMainWindow")
+    if not window:
+        win_list = ax_attr(app_ref, "AXWindows")
+        if win_list and len(win_list) > 0:
+            window = win_list[0]
+
+    return window, is_electron
 
 
 def describe_app(pid=None, max_elements=150):
@@ -342,37 +466,75 @@ def describe_app(pid=None, max_elements=150):
 
     For Electron apps (VS Code, Slack, Discord, etc.), automatically
     enables AXManualAccessibility to unlock the full tree (~5 → 200+ elements).
+
+    Results are cached for 1 second to avoid redundant walks within
+    a single do() invocation (snap → action → snap).
     """
-    if pid is None:
+    # Resolve pid for cache key
+    resolved_pid = pid
+    if resolved_pid is None:
         app = frontmost_app()
-        if not app:
-            return []
-        pid = app["pid"]
-    else:
-        app = None
+        if app:
+            resolved_pid = app["pid"]
 
-    # Detect Electron apps and enable rich accessibility tree
-    bundle_id = _bundle_id_for_pid(pid, app)
-    is_electron = _is_electron(bundle_id)
-    if is_electron:
-        _ensure_electron_accessibility(pid)
+    cache_key = ("describe", resolved_pid, max_elements)
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
 
-    app_ref = AXUIElementCreateApplication(pid)
-
-    # Try focused window first, then main window, then first window
-    window = ax_attr(app_ref, "AXFocusedWindow")
-    if not window:
-        window = ax_attr(app_ref, "AXMainWindow")
-    if not window:
-        win_list = ax_attr(app_ref, "AXWindows")
-        if win_list and len(win_list) > 0:
-            window = win_list[0]
+    window, is_electron = _get_window(pid)
     if not window:
         return []
 
-    # Electron apps nest content deep (VS Code: depth 14-20)
     depth = 20 if is_electron else 8
-    return walk_tree(window, max_depth=depth, max_elements=max_elements)
+    result = walk_tree(window, max_depth=depth, max_elements=max_elements)
+    _cache_set(cache_key, result)
+    return result
+
+
+def full_describe(pid=None, max_elements=150):
+    """Single-pass tree walk returning elements, tables, and lists.
+
+    This is the preferred way for see() to get all data — one walk
+    instead of three separate calls to describe_app + find_tables + find_lists.
+
+    Results are cached for 1 second.
+
+    Returns:
+        dict with "elements" (flat list), "tables" (structured table dicts),
+        "lists" (structured list dicts).
+    """
+    resolved_pid = pid
+    if resolved_pid is None:
+        app = frontmost_app()
+        if app:
+            resolved_pid = app["pid"]
+
+    cache_key = ("full", resolved_pid, max_elements)
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    window, is_electron = _get_window(pid)
+    if not window:
+        return {"elements": [], "tables": [], "lists": []}
+
+    depth = 20 if is_electron else 8
+    table_refs = []
+    list_refs = []
+    elements = walk_tree(window, max_depth=depth, max_elements=max_elements,
+                         _tables=table_refs, _lists=list_refs)
+
+    tables = [tbl for t in table_refs if (tbl := read_table(t))]
+    lists = [lst for el in list_refs if (lst := read_list(el))]
+
+    result = {"elements": elements, "tables": tables, "lists": lists}
+    _cache_set(cache_key, result)
+
+    # Also populate the describe_app cache (same elements)
+    _cache_set(("describe", resolved_pid, max_elements), elements)
+
+    return result
 
 
 def find_elements(query, pid=None):
@@ -470,6 +632,236 @@ def read_content(pid=None, max_chars=5000):
 
     _extract_content(window)
     return results
+
+
+def read_table(element):
+    """Extract structured table data from an AXTable element.
+
+    Walks AXRows and their AXCells to build a rows×columns matrix.
+    Detects headers from AXHeader or the first row.
+
+    Args:
+        element: An AXUIElement with role AXTable.
+
+    Returns:
+        dict with headers, rows, row_refs (for clicking), and dimensions.
+        Returns None if the element isn't a table or has no data.
+    """
+    role = ax_attr(element, "AXRole") or ""
+    if role != "AXTable":
+        return None
+
+    title = ax_attr(element, "AXTitle") or ax_attr(element, "AXDescription") or ""
+
+    # Try to get rows via AXRows (preferred) or AXChildren
+    rows_list = ax_attr(element, "AXRows") or []
+    if not rows_list:
+        children = ax_attr(element, "AXChildren")
+        if children:
+            rows_list = [c for c in children if (ax_attr(c, "AXRole") or "") == "AXRow"]
+
+    if not rows_list:
+        return None
+
+    # Try to get column headers from AXHeader
+    headers = []
+    header_el = ax_attr(element, "AXHeader")
+    if header_el:
+        header_cells = ax_attr(header_el, "AXChildren") or []
+        for cell in header_cells:
+            headers.append(_cell_text(cell))
+
+    # Try AXColumns for header names if AXHeader didn't work
+    if not headers:
+        columns = ax_attr(element, "AXColumns") or []
+        for col in columns:
+            col_header = ax_attr(col, "AXTitle") or ax_attr(col, "AXHeader") or ""
+            if col_header:
+                headers.append(str(col_header))
+
+    # Extract row data
+    data_rows = []
+    row_refs = []  # Keep AX refs for clicking rows later
+    for row in rows_list:
+        cells = ax_attr(row, "AXChildren") or []
+        row_data = []
+        for cell in cells:
+            row_data.append(_cell_text(cell))
+        if row_data:
+            data_rows.append(row_data)
+            row_refs.append(row)
+
+    if not data_rows:
+        return None
+
+    # If no explicit headers, use first row as headers if it looks like one
+    # (all strings, no numbers) — otherwise leave headers empty
+    num_cols = max(len(r) for r in data_rows) if data_rows else 0
+    if not headers and num_cols > 0:
+        headers = [f"Col {i+1}" for i in range(num_cols)]
+
+    # Normalize row lengths
+    for row in data_rows:
+        while len(row) < num_cols:
+            row.append("")
+
+    return {
+        "title": title,
+        "headers": headers[:num_cols] if headers else [],
+        "rows": data_rows,
+        "row_refs": row_refs,
+        "num_rows": len(data_rows),
+        "num_cols": num_cols,
+    }
+
+
+def read_list(element):
+    """Extract structured list data from an AXList or AXOutline element.
+
+    Args:
+        element: An AXUIElement with role AXList or AXOutline.
+
+    Returns:
+        dict with items (label, value, index), item_refs, and metadata.
+        Returns None if the element isn't a list or has no items.
+    """
+    role = ax_attr(element, "AXRole") or ""
+    if role not in ("AXList", "AXOutline"):
+        return None
+
+    title = ax_attr(element, "AXTitle") or ax_attr(element, "AXDescription") or ""
+
+    children = ax_attr(element, "AXChildren") or []
+    if not children:
+        return None
+
+    items = []
+    item_refs = []
+    for i, child in enumerate(children):
+        child_role = ax_attr(child, "AXRole") or ""
+        label = ax_attr(child, "AXTitle") or ax_attr(child, "AXDescription") or ""
+        value = ax_attr(child, "AXValue")
+        selected = ax_attr(child, "AXSelected")
+
+        # For rows in outlines, get the text from first child
+        if not label and child_role == "AXRow":
+            row_children = ax_attr(child, "AXChildren") or []
+            for rc in row_children:
+                label = ax_attr(rc, "AXTitle") or ax_attr(rc, "AXValue") or ""
+                if label:
+                    label = str(label)
+                    break
+
+        # For generic children, try value
+        if not label and value is not None:
+            label = str(value)
+
+        item = {"index": i, "label": label}
+        if value is not None and str(value) != label:
+            item["value"] = str(value)
+        if selected:
+            item["selected"] = True
+
+        items.append(item)
+        item_refs.append(child)
+
+    if not items:
+        return None
+
+    return {
+        "title": title,
+        "type": "outline" if role == "AXOutline" else "list",
+        "items": items,
+        "item_refs": item_refs,
+        "count": len(items),
+    }
+
+
+def find_tables(pid=None):
+    """Find all tables in the focused window.
+
+    Returns list of structured table data (from read_table).
+    """
+    if pid is None:
+        app = frontmost_app()
+        if not app:
+            return []
+        pid = app["pid"]
+
+    app_ref = AXUIElementCreateApplication(pid)
+    window = ax_attr(app_ref, "AXFocusedWindow") or ax_attr(app_ref, "AXMainWindow")
+    if not window:
+        return []
+
+    tables = []
+    _find_role(window, "AXTable", tables, max_depth=10)
+    return [tbl for t in tables if (tbl := read_table(t))]
+
+
+def find_lists(pid=None):
+    """Find all lists in the focused window.
+
+    Returns list of structured list data (from read_list).
+    """
+    if pid is None:
+        app = frontmost_app()
+        if not app:
+            return []
+        pid = app["pid"]
+
+    app_ref = AXUIElementCreateApplication(pid)
+    window = ax_attr(app_ref, "AXFocusedWindow") or ax_attr(app_ref, "AXMainWindow")
+    if not window:
+        return []
+
+    lists = []
+    _find_role(window, "AXList", lists, max_depth=10)
+    _find_role(window, "AXOutline", lists, max_depth=10)
+    return [lst for el in lists if (lst := read_list(el))]
+
+
+def _find_role(element, target_role, results, depth=0, max_depth=10):
+    """Recursively find elements with a specific role."""
+    if depth > max_depth:
+        return
+
+    role = ax_attr(element, "AXRole") or ""
+    if role == target_role:
+        results.append(element)
+        return  # Don't recurse into tables/lists themselves
+
+    children = ax_attr(element, "AXChildren")
+    if children:
+        for child in children:
+            _find_role(child, target_role, results, depth + 1, max_depth)
+
+
+def _cell_text(cell):
+    """Extract text content from a table cell element.
+
+    Tries AXValue, AXTitle, then recurses into children.
+    """
+    value = ax_attr(cell, "AXValue")
+    if value is not None:
+        return str(value).strip()
+
+    title = ax_attr(cell, "AXTitle")
+    if title:
+        return str(title).strip()
+
+    desc = ax_attr(cell, "AXDescription")
+    if desc:
+        return str(desc).strip()
+
+    # Recurse into children (cells often wrap content in static text)
+    children = ax_attr(cell, "AXChildren")
+    if children:
+        for child in children:
+            text = _cell_text(child)
+            if text:
+                return text
+
+    return ""
 
 
 def window_title(pid=None):

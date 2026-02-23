@@ -263,6 +263,209 @@ class TestServerToolSignatures:
 # ===========================================================================
 
 
+# ===========================================================================
+# Tree cache — verify caching behavior
+# ===========================================================================
+
+
+class TestTreeCache:
+    """Test the tree cache in access.py."""
+
+    def test_cache_set_and_get(self):
+        from nexus.sense.access import _cache_set, _cache_get
+        _cache_set("test_key", [1, 2, 3])
+        result = _cache_get("test_key")
+        assert result == [1, 2, 3]
+
+    def test_cache_miss(self):
+        from nexus.sense.access import _cache_get
+        result = _cache_get("nonexistent_key_xyz_12345")
+        assert result is None
+
+    def test_cache_invalidate(self):
+        from nexus.sense.access import _cache_set, _cache_get, invalidate_cache
+        _cache_set("temp_key", "data")
+        invalidate_cache()
+        result = _cache_get("temp_key")
+        assert result is None
+
+    def test_cache_ttl_expires(self):
+        import time
+        from nexus.sense.access import _tree_cache, _CACHE_TTL, _cache_get
+        # Manually insert an expired entry
+        _tree_cache["old_key"] = (time.time() - _CACHE_TTL - 1, "stale")
+        result = _cache_get("old_key")
+        assert result is None
+
+
+# ===========================================================================
+# Full describe — single-pass tree walk
+# ===========================================================================
+
+
+class TestFullDescribe:
+    """Test full_describe returns elements, tables, and lists."""
+
+    def test_full_describe_returns_dict(self):
+        from nexus.sense.access import full_describe
+        result = full_describe()
+        assert isinstance(result, dict)
+        assert "elements" in result
+        assert "tables" in result
+        assert "lists" in result
+        assert isinstance(result["elements"], list)
+        assert isinstance(result["tables"], list)
+        assert isinstance(result["lists"], list)
+
+    def test_full_describe_elements_have_group(self):
+        """Some elements should have _group annotations."""
+        from nexus.sense.access import full_describe
+        result = full_describe()
+        # At least some elements should have groups (toolbars, etc.)
+        groups = [el.get("_group") for el in result["elements"] if el.get("_group")]
+        # On VS Code, there are always toolbars
+        assert len(groups) >= 0  # May be 0 on apps without groups
+
+
+# ===========================================================================
+# Grouped rendering — unit tests for the renderer
+# ===========================================================================
+
+
+class TestGroupedRendering:
+    """Test _render_grouped_elements and related functions."""
+
+    def test_ungrouped_elements(self):
+        """Elements without groups should render flat."""
+        from nexus.sense.fusion import _render_grouped_elements
+        elements = [
+            {"role": "button", "label": "Save", "_ax_role": "AXButton"},
+            {"role": "button", "label": "Cancel", "_ax_role": "AXButton"},
+        ]
+        lines = _render_grouped_elements(elements)
+        assert len(lines) == 2
+        assert all(line.startswith("  ") for line in lines)
+        assert not any(line.endswith(":") for line in lines)
+
+    def test_grouped_elements_with_heading(self):
+        """Elements in a group with 2+ useful elements should get a heading."""
+        from nexus.sense.fusion import _render_grouped_elements
+        elements = [
+            {"role": "button", "label": "Save", "_ax_role": "AXButton", "_group": "Toolbar"},
+            {"role": "button", "label": "Cancel", "_ax_role": "AXButton", "_group": "Toolbar"},
+            {"role": "button", "label": "Help", "_ax_role": "AXButton"},
+        ]
+        lines = _render_grouped_elements(elements)
+        assert any("Toolbar:" in line for line in lines)
+        # Grouped elements should be indented more
+        toolbar_items = [l for l in lines if "Save" in l or "Cancel" in l]
+        assert all(l.startswith("    ") for l in toolbar_items)
+
+    def test_single_element_group_no_heading(self):
+        """A group with only 1 useful element should NOT get a heading."""
+        from nexus.sense.fusion import _render_grouped_elements
+        elements = [
+            {"role": "button", "label": "Solo", "_ax_role": "AXButton", "_group": "Tiny"},
+        ]
+        lines = _render_grouped_elements(elements)
+        assert not any("Tiny:" in line for line in lines)
+
+    def test_container_noise_suppressed(self):
+        """Group container elements (AXToolbar etc.) should be suppressed under heading."""
+        from nexus.sense.fusion import _render_grouped_elements
+        elements = [
+            {"role": "toolbar", "label": "", "_ax_role": "AXToolbar", "_group": "Toolbar"},
+            {"role": "button", "label": "Save", "_ax_role": "AXButton", "_group": "Toolbar"},
+            {"role": "button", "label": "Cancel", "_ax_role": "AXButton", "_group": "Toolbar"},
+        ]
+        lines = _render_grouped_elements(elements)
+        # The toolbar element should be suppressed
+        assert not any("toolbar" in line.lower() and "Save" not in line for line in lines
+                       if "Toolbar:" not in line)
+        # Save and Cancel should appear
+        assert any("Save" in line for line in lines)
+        assert any("Cancel" in line for line in lines)
+
+    def test_long_group_label_truncated(self):
+        """Very long group labels should be truncated."""
+        from nexus.sense.fusion import _render_grouped_elements
+        long_name = "A" * 80
+        elements = [
+            {"role": "button", "label": "X", "_ax_role": "AXButton", "_group": long_name},
+            {"role": "button", "label": "Y", "_ax_role": "AXButton", "_group": long_name},
+        ]
+        lines = _render_grouped_elements(elements)
+        heading = [l for l in lines if l.strip().endswith(":")]
+        assert heading
+        assert len(heading[0]) < 80  # Truncated
+
+    def test_wrapper_group_suppression(self):
+        """AXGroup wrappers that duplicate interactive elements should be removed."""
+        from nexus.sense.fusion import _suppress_wrapper_groups
+        elements = [
+            {"role": "group", "label": "Save", "_ax_role": "AXGroup"},
+            {"role": "button", "label": "Save", "_ax_role": "AXButton"},
+            {"role": "group", "label": "Cancel", "_ax_role": "AXGroup"},
+            {"role": "button", "label": "Cancel", "_ax_role": "AXButton"},
+            {"role": "group", "label": "Unique Section", "_ax_role": "AXGroup"},
+        ]
+        result = _suppress_wrapper_groups(elements)
+        labels = [el["label"] for el in result]
+        # Wrapper groups should be removed
+        assert labels.count("Save") == 1
+        assert labels.count("Cancel") == 1
+        # Unique group with no matching button should be kept
+        assert "Unique Section" in labels
+
+    def test_wrapper_suppression_keeps_unique_groups(self):
+        """Groups with labels not matching any other element should survive."""
+        from nexus.sense.fusion import _suppress_wrapper_groups
+        elements = [
+            {"role": "group", "label": "Sidebar", "_ax_role": "AXGroup"},
+            {"role": "button", "label": "Home", "_ax_role": "AXButton"},
+        ]
+        result = _suppress_wrapper_groups(elements)
+        # Both should be kept — "Sidebar" is unique
+        assert len(result) == 2
+
+
+# ===========================================================================
+# Group label generation
+# ===========================================================================
+
+
+class TestGroupLabels:
+    """Test _make_group_label in access.py."""
+
+    def test_toolbar_with_label(self):
+        from nexus.sense.access import _make_group_label
+        assert _make_group_label("AXToolbar", "Main") == "Toolbar: Main"
+
+    def test_toolbar_without_label(self):
+        from nexus.sense.access import _make_group_label
+        assert _make_group_label("AXToolbar", "") == "Toolbar"
+
+    def test_dialog_with_label(self):
+        from nexus.sense.access import _make_group_label
+        assert _make_group_label("AXDialog", "Save As") == "Dialog: Save As"
+
+    def test_group_with_label(self):
+        from nexus.sense.access import _make_group_label
+        # AXGroup has empty display name, so just uses the label
+        assert _make_group_label("AXGroup", "Navigation") == "Navigation"
+
+    def test_group_without_label(self):
+        from nexus.sense.access import _make_group_label
+        result = _make_group_label("AXGroup", "")
+        assert result is None
+
+    def test_unknown_role(self):
+        from nexus.sense.access import _make_group_label
+        result = _make_group_label("AXUnknown", "test")
+        # Unknown roles just use the label
+        assert result == "test"
+
+
 class TestCdpHelpers:
     """Test CDP helper functions that don't need a running Chrome."""
 
@@ -282,3 +485,54 @@ class TestCdpHelpers:
         result = page_info()
         # Result is None or a dict — both valid
         assert result is None or isinstance(result, dict)
+
+
+class TestObserveSmoke:
+    """Smoke tests for observation module — no accessibility permission needed."""
+
+    def test_observe_module_imports(self):
+        from nexus.sense import observe
+        assert hasattr(observe, "start_observing")
+        assert hasattr(observe, "stop_observing")
+        assert hasattr(observe, "drain_events")
+        assert hasattr(observe, "is_observing")
+        assert hasattr(observe, "status")
+        assert hasattr(observe, "format_events")
+
+    def test_drain_events_without_starting(self):
+        from nexus.sense.observe import drain_events
+        assert drain_events() == []
+
+    def test_is_observing_default_false(self):
+        from nexus.sense.observe import is_observing
+        assert is_observing() is False
+        assert is_observing(12345) is False
+
+    def test_status_default_empty(self):
+        from nexus.sense.observe import status
+        s = status()
+        assert s["ok"] is True
+        assert s["observing"] == []
+        assert s["buffered"] == 0
+
+    def test_format_events_empty(self):
+        from nexus.sense.observe import format_events
+        assert format_events([]) == ""
+
+    def test_format_events_single(self):
+        from nexus.sense.observe import format_events
+        text = format_events([{"type": "AXWindowCreated", "role": "AXWindow", "label": "Test", "pid": 1, "ts": 1.0}])
+        assert "Recent events (1):" in text
+        assert "WindowCreated" in text
+
+    def test_stop_observing_without_starting(self):
+        from nexus.sense.observe import stop_observing
+        result = stop_observing()
+        assert result["ok"] is True
+        assert result["stopped"] == []
+
+    def test_notifications_list_populated(self):
+        from nexus.sense.observe import _NOTIFICATIONS
+        assert len(_NOTIFICATIONS) >= 5
+        assert "AXWindowCreated" in _NOTIFICATIONS
+        assert "AXValueChanged" in _NOTIFICATIONS

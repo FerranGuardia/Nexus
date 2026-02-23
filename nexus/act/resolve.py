@@ -3,33 +3,29 @@
 Parses natural-language-ish intents and routes to the best action.
 The AI calls do("click Save") and Nexus figures out the rest.
 
-Supported intents:
-    click <target>              → find & click element
-    click <menu > path>         → click menu item (e.g. "click File > Save")
-    double-click <target>       → find & double-click element
-    right-click <target>        → find & right-click element
-    type <text>                 → type into focused element
-    type <text> in <target>     → find target, focus, type
-    press <keys>                → keyboard shortcut (e.g. "press cmd+s")
-    open <app>                  → launch application
-    switch to <app>             → activate app/window
-    scroll <direction>          → scroll up/down/left/right
-    focus <target>              → find & focus element
-    close                       → close focused window
-    select all / copy / paste / undo / redo
-    get clipboard               → read clipboard contents
-    get url                     → get Safari's current URL
-    get tabs                    → list Safari's tabs
-    tile <app1> and <app2>      → tile two apps side by side
-    maximize                    → maximize focused window
-    move window left/right/full → position window
-    menu <path>                 → click a menu item by path
-    notify <message>            → show macOS notification
-    say <text>                  → speak text aloud
+Supports 60+ intent patterns including click (ordinal, spatial, container),
+double/right/triple-click, modifier-click, hover, drag, type, press, scroll
+(targeted + until), fill, wait, navigate, js, tab management, and more.
 """
 
 import re
 from nexus.act import native, input as raw_input
+
+
+# ---------------------------------------------------------------------------
+# Role name → AXRole mapping (single source of truth)
+# ---------------------------------------------------------------------------
+
+ROLE_MAP = {
+    "button": "AXButton", "link": "AXLink", "tab": "AXTab",
+    "menu": "AXMenuItem", "field": "AXTextField", "checkbox": "AXCheckBox",
+    "radio": "AXRadioButton", "text": "AXStaticText", "image": "AXImage",
+    "slider": "AXSlider", "switch": "AXSwitch", "toggle": "AXSwitch",
+    "icon": "AXImage", "label": "AXStaticText",
+}
+
+# Role words recognized in ordinals and spatial references
+ROLE_WORDS = frozenset(ROLE_MAP.keys())
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +48,8 @@ VERB_SYNONYMS = {
     "browse": "navigate", "visit": "navigate", "load": "navigate",
     # focus synonyms
     "find": "focus", "locate": "focus",
+    # hover synonyms
+    "mouseover": "hover",
     # switch synonyms
     "bring": "switch",
 }
@@ -64,7 +62,8 @@ PHRASE_SYNONYMS = {
     "go to": "navigate",
     "switch to": "switch to",
     "type in": "type",
-    "move to": "navigate",
+    # "move to" intentionally omitted — "move" is a window management verb
+    # Use "go to" / "visit" / "navigate" for URL navigation
     "look at": "focus",
 }
 
@@ -136,8 +135,7 @@ def _parse_ordinal(text):
     if not words:
         return None
 
-    role_words = {"button", "link", "tab", "menu", "field", "checkbox",
-                  "radio", "text", "image", "slider", "switch", "toggle"}
+    role_words = ROLE_WORDS
 
     # Pattern 1: "<ordinal> [label...] <role>" — "2nd button", "third Save button"
     ordinal = _word_to_ordinal(words[0])
@@ -173,20 +171,6 @@ def _word_to_ordinal(word):
 # ---------------------------------------------------------------------------
 # Spatial element resolution — "button near search", "field below Username"
 # ---------------------------------------------------------------------------
-
-_SPATIAL_ROLE_WORDS = {
-    "button", "link", "tab", "menu", "field", "checkbox",
-    "radio", "text", "image", "slider", "switch", "toggle",
-    "icon", "label",
-}
-
-_SPATIAL_ROLE_MAP = {
-    "button": "AXButton", "link": "AXLink", "tab": "AXTab",
-    "menu": "AXMenuItem", "field": "AXTextField", "checkbox": "AXCheckBox",
-    "radio": "AXRadioButton", "text": "AXStaticText", "image": "AXImage",
-    "slider": "AXSlider", "switch": "AXSwitch", "toggle": "AXSwitch",
-    "icon": "AXImage",
-}
 
 SPATIAL_RELATIONS = [
     (re.compile(r'^(.+?)\s+(?:below|under|beneath|underneath)\s+(.+)$', re.IGNORECASE), 'below'),
@@ -252,17 +236,17 @@ def _filter_by_search(elements, search):
     role_word = None
     label_filter = ""
 
-    if search_lower in _SPATIAL_ROLE_WORDS:
+    if search_lower in ROLE_WORDS:
         role_word = search_lower
-    elif len(words) >= 2 and words[-1] in _SPATIAL_ROLE_WORDS:
+    elif len(words) >= 2 and words[-1] in ROLE_WORDS:
         role_word = words[-1]
         label_filter = " ".join(words[:-1])
-    elif len(words) >= 2 and words[0] in _SPATIAL_ROLE_WORDS:
+    elif len(words) >= 2 and words[0] in ROLE_WORDS:
         role_word = words[0]
         label_filter = " ".join(words[1:])
 
     if role_word:
-        ax_role = _SPATIAL_ROLE_MAP.get(role_word)
+        ax_role = ROLE_MAP.get(role_word)
         if ax_role:
             matches = [el for el in elements if el.get("_ax_role") == ax_role]
         else:
@@ -280,14 +264,14 @@ def _filter_by_search(elements, search):
     return [el for el in elements if search_lower in el.get("label", "").lower()]
 
 
-def _click_spatial(spatial_info, double=False, right=False, pid=None):
+def _click_spatial(spatial_info, double=False, right=False, triple=False, modifiers=None, pid=None):
     """Click an element using spatial relationship to a reference element."""
     from nexus.sense.access import describe_app, find_elements
 
     search, relation, reference = spatial_info
 
     if relation == "region":
-        return _click_in_region(search, reference, double=double, right=right, pid=pid)
+        return _click_in_region(search, reference, double=double, right=right, triple=triple, modifiers=modifiers, pid=pid)
 
     ref_matches = find_elements(reference, pid)
     if not ref_matches:
@@ -348,10 +332,10 @@ def _click_spatial(spatial_info, double=False, right=False, pid=None):
 
     scored.sort(key=lambda x: x[0])
     target = scored[0][1]
-    return _click_resolved(target, double=double, right=right)
+    return _click_resolved(target, double=double, right=right, triple=triple, modifiers=modifiers)
 
 
-def _click_in_region(search, region, double=False, right=False, pid=None):
+def _click_in_region(search, region, double=False, right=False, triple=False, modifiers=None, pid=None):
     """Click an element in a specific screen region."""
     from nexus.sense.access import describe_app
     from nexus.act.input import screen_size
@@ -396,10 +380,10 @@ def _click_in_region(search, region, double=False, right=False, pid=None):
             "region_bounds": [rx1, ry1, rx2, ry2],
         }
 
-    return _click_resolved(in_region[0], double=double, right=right)
+    return _click_resolved(in_region[0], double=double, right=right, triple=triple, modifiers=modifiers)
 
 
-def _click_resolved(target, double=False, right=False):
+def _click_resolved(target, double=False, right=False, triple=False, modifiers=None):
     """Click a resolved element dict. Used by spatial and region resolution."""
     from nexus.sense.access import ax_actions, ax_perform
 
@@ -410,7 +394,7 @@ def _click_resolved(target, double=False, right=False):
     clicked = False
     at = None
 
-    if ref and not (double or right):
+    if ref and not (double or right or triple or modifiers):
         actions = ax_actions(ref)
         if "AXPress" in actions:
             clicked = ax_perform(ref, "AXPress")
@@ -420,7 +404,13 @@ def _click_resolved(target, double=False, right=False):
     if pos and size:
         cx, cy = pos[0] + size[0] // 2, pos[1] + size[1] // 2
         at = [cx, cy]
-        if double:
+        if modifiers:
+            raw_input.modifier_click(cx, cy, _resolve_modifiers(modifiers))
+            clicked = True
+        elif triple:
+            raw_input.triple_click(cx, cy)
+            clicked = True
+        elif double:
             raw_input.double_click(cx, cy)
             clicked = True
         elif right:
@@ -432,9 +422,130 @@ def _click_resolved(target, double=False, right=False):
 
     if clicked:
         clean = {k: v for k, v in target.items() if not k.startswith("_")}
-        return {"ok": True, "action": "click_spatial", "element": clean, "at": at}
+        result = {"ok": True, "action": "click_spatial", "element": clean, "at": at}
+        if modifiers:
+            result["modifiers"] = modifiers
+        return result
 
     return {"ok": False, "error": "Found element but could not click it"}
+
+
+# ---------------------------------------------------------------------------
+# Container scoping — "click X in the row with/containing Y"
+# ---------------------------------------------------------------------------
+
+_CONTAINER_RE = re.compile(
+    r'^(.+?)\s+in\s+(?:the\s+)?row\s+(?:with|containing|that\s+(?:has|contains))\s+(.+)$',
+    re.IGNORECASE,
+)
+_CONTAINER_ROW_NUM_RE = re.compile(
+    r'^(.+?)\s+in\s+(?:the\s+)?row\s+(\d+)$',
+    re.IGNORECASE,
+)
+
+
+def _parse_container(text):
+    """Parse container-scoped click: 'delete in the row with Alice'.
+
+    Returns (target, row_match, row_index) or None.
+    - target: what to click inside the row
+    - row_match: text to find the row by (or None for row index)
+    - row_index: 1-based row number (or None for text match)
+    """
+    stripped = text.strip()
+    if stripped.lower().startswith("the "):
+        stripped = stripped[4:]
+
+    # "X in row 3"
+    m = _CONTAINER_ROW_NUM_RE.match(stripped)
+    if m:
+        return (m.group(1).strip(), None, int(m.group(2)))
+
+    # "X in the row with/containing Y"
+    m = _CONTAINER_RE.match(stripped)
+    if m:
+        return (m.group(1).strip(), m.group(2).strip(), None)
+
+    return None
+
+
+def _click_in_container(container_info, double=False, right=False, triple=False, modifiers=None, pid=None):
+    """Click a target element inside a matching row.
+
+    Finds the row (by text content or index), then searches within
+    that row's subtree for the target element.
+    """
+    from nexus.sense.access import (
+        find_tables, ax_attr, ax_actions, ax_perform, _cell_text,
+    )
+
+    target_name, row_match, row_index = container_info
+
+    tables = find_tables(pid)
+    if not tables:
+        return {"ok": False, "error": "No tables found for container scoping"}
+
+    # Search all tables for the matching row
+    for tbl in tables:
+        rows = tbl.get("rows", [])
+        row_refs = tbl.get("row_refs", [])
+
+        if row_index is not None:
+            # By row number (1-based)
+            idx = row_index - 1
+            if 0 <= idx < len(row_refs):
+                return _find_and_click_in_row(
+                    row_refs[idx], target_name,
+                    double=double, right=right, triple=triple, modifiers=modifiers,
+                )
+        elif row_match:
+            # By content match — find the row containing the text
+            match_lower = row_match.lower()
+            for i, row_data in enumerate(rows):
+                row_text = " ".join(str(cell) for cell in row_data).lower()
+                if match_lower in row_text and i < len(row_refs):
+                    return _find_and_click_in_row(
+                        row_refs[i], target_name,
+                        double=double, right=right, triple=triple, modifiers=modifiers,
+                    )
+
+    if row_index is not None:
+        return {"ok": False, "error": f"Row {row_index} not found in any table"}
+    return {"ok": False, "error": f'No row containing "{row_match}" found'}
+
+
+def _find_and_click_in_row(row_ref, target_name, double=False, right=False, triple=False, modifiers=None):
+    """Search within a row's subtree for an element matching target_name and click it."""
+    from nexus.sense.access import ax_attr, walk_tree
+
+    # Walk the row's subtree to find clickable children
+    children = walk_tree(row_ref, max_depth=5, max_elements=50)
+
+    target_lower = target_name.lower()
+
+    # Check if target is a role word — "click button in row with Alice"
+    ax_role = ROLE_MAP.get(target_lower)
+
+    matches = []
+    for el in children:
+        if ax_role:
+            if el.get("_ax_role") == ax_role:
+                matches.append(el)
+        else:
+            label = el.get("label", "").lower()
+            role = el.get("role", "").lower()
+            if target_lower == label or target_lower in label or target_lower in role:
+                matches.append(el)
+
+    if not matches:
+        available = [el.get("label", "") or el.get("role", "") for el in children]
+        return {
+            "ok": False,
+            "error": f'"{target_name}" not found in the row',
+            "available_in_row": [a for a in available if a][:10],
+        }
+
+    return _click_resolved(matches[0], double=double, right=right, triple=triple, modifiers=modifiers)
 
 
 # Key name mappings for "press" intent
@@ -455,6 +566,17 @@ KEY_ALIASES = {
     "f5": "f5", "f6": "f6", "f7": "f7", "f8": "f8",
     "f9": "f9", "f10": "f10", "f11": "f11", "f12": "f12",
 }
+
+
+def _current_app_name(pid=None):
+    """Get the app name for a PID (or frontmost app)."""
+    if pid is None:
+        from nexus.sense.access import frontmost_app
+        info = frontmost_app()
+        return info["name"] if info else None
+    from nexus.sense.fusion import _app_info_for_pid
+    info = _app_info_for_pid(pid)
+    return info["name"] if info else None
 
 
 def do(action, pid=None):
@@ -522,8 +644,35 @@ def do(action, pid=None):
     if lower in ("get selection", "finder selection", "selected files"):
         return native.finder_selection()
 
-    if lower in ("maximize", "maximize window", "fullscreen"):
+    if lower in ("get table", "read table", "table"):
+        return _handle_read_table(pid=pid)
+
+    if lower in ("get list", "read list", "list"):
+        return _handle_read_list(pid=pid)
+
+    # --- Window info getters ---
+    if lower.startswith("where is ") or lower.startswith("where's "):
+        app_q = action.strip().split(None, 2)[-1].rstrip("?").strip()
+        return native.window_info(app_name=app_q)
+
+    if lower in ("window info", "get window info", "get window"):
+        return native.window_info()
+
+    # --- Window management shortcuts ---
+    if lower in ("maximize", "maximize window"):
         return native.maximize_window()
+
+    if lower in ("fullscreen", "enter fullscreen", "go fullscreen"):
+        return native.fullscreen_window()
+
+    if lower in ("exit fullscreen", "leave fullscreen", "unfullscreen"):
+        return native.fullscreen_window()  # Toggle
+
+    if lower in ("minimize", "minimize window"):
+        return native.minimize_window()
+
+    if lower in ("restore", "restore window", "unminimize", "unminimize window"):
+        return native.unminimize_window()
 
     # --- Synonym expansion (after shortcuts/getters, before verb dispatch) ---
     action = _normalize_action(action)
@@ -546,6 +695,14 @@ def do(action, pid=None):
 
     if verb in ("right-click", "rightclick", "rclick"):
         return _handle_click(rest, right=True, pid=pid)
+
+    if verb in ("triple-click", "tripleclick", "tclick"):
+        return _handle_click(rest, triple=True, pid=pid)
+
+    # Modifier-click: "shift-click", "cmd-click", "option-click", "ctrl-click"
+    mod_match = re.match(r"^(shift|cmd|command|opt|option|ctrl|control)-?click$", verb, re.IGNORECASE)
+    if mod_match:
+        return _handle_click(rest, modifiers=[mod_match.group(1).lower()], pid=pid)
 
     if verb == "type":
         return _handle_type(rest, pid=pid)
@@ -576,19 +733,34 @@ def do(action, pid=None):
         return _handle_close_tab(tab_rest)
 
     if verb == "scroll":
-        return _handle_scroll(rest)
+        return _handle_scroll(rest, pid=pid)
+
+    if verb == "hover":
+        return _handle_hover(rest, pid=pid)
 
     if verb == "focus":
         return native.focus_element(rest, pid=pid)
 
     if verb == "drag":
-        return _handle_drag(rest)
+        return _handle_drag(rest, pid=pid)
 
     if verb == "tile":
         return _handle_tile(rest)
 
     if verb in ("move", "position"):
         return _handle_move(rest)
+
+    if verb == "minimize":
+        return _handle_minimize(rest)
+
+    if verb in ("restore", "unminimize"):
+        return _handle_restore(rest)
+
+    if verb == "resize":
+        return _handle_resize(rest, pid=pid)
+
+    if verb == "fullscreen":
+        return _handle_fullscreen(rest)
 
     if verb == "menu":
         return native.click_menu(rest, pid=pid)
@@ -598,6 +770,9 @@ def do(action, pid=None):
 
     if verb == "wait":
         return _handle_wait(rest, pid=pid)
+
+    if verb == "observe":
+        return _handle_observe(rest, pid=pid)
 
     if verb == "notify":
         return native.notify("Nexus", rest)
@@ -667,11 +842,13 @@ def _run_chain(action, pid=None):
     }
 
 
-def _handle_click(target, double=False, right=False, pid=None):
+def _handle_click(target, double=False, right=False, triple=False, modifiers=None, pid=None):
     """Handle click intents."""
     if not target:
         # Click at current mouse position
         pos = raw_input.mouse_position()
+        if triple:
+            return raw_input.triple_click(pos["x"], pos["y"])
         if right:
             return raw_input.right_click(pos["x"], pos["y"])
         if double:
@@ -682,6 +859,10 @@ def _handle_click(target, double=False, right=False, pid=None):
     coord_match = re.match(r"(?:at\s+)?(\d+)[,\s]+(\d+)", target)
     if coord_match:
         x, y = int(coord_match.group(1)), int(coord_match.group(2))
+        if modifiers:
+            return raw_input.modifier_click(x, y, _resolve_modifiers(modifiers))
+        if triple:
+            return raw_input.triple_click(x, y)
         if right:
             return raw_input.right_click(x, y)
         if double:
@@ -691,32 +872,73 @@ def _handle_click(target, double=False, right=False, pid=None):
     # Check for ordinal reference: "the 2nd button", "3rd link", "last checkbox"
     ordinal = _parse_ordinal(target)
     if ordinal:
-        return _click_nth(ordinal, double=double, right=right, pid=pid)
+        return _click_nth(ordinal, double=double, right=right, triple=triple, modifiers=modifiers, pid=pid)
+
+    # Check for container scoping: "delete in the row with Alice"
+    container = _parse_container(target)
+    if container:
+        return _click_in_container(container, double=double, right=right, triple=triple, modifiers=modifiers, pid=pid)
 
     # Check for spatial reference: "button near search", "field below Username"
     spatial = _parse_spatial(target)
     if spatial:
-        return _click_spatial(spatial, double=double, right=right, pid=pid)
+        return _click_spatial(spatial, double=double, right=right, triple=triple, modifiers=modifiers, pid=pid)
 
     # Parse optional role filter: "click button Save" or "click Save button"
     role = None
     parts = target.split()
-    role_words = {"button", "link", "tab", "menu", "field", "checkbox", "radio", "text"}
     if len(parts) >= 2:
-        if parts[0].lower() in role_words:
+        if parts[0].lower() in ROLE_WORDS:
             role = parts[0]
             target = " ".join(parts[1:])
-        elif parts[-1].lower() in role_words:
+        elif parts[-1].lower() in ROLE_WORDS:
             role = parts[-1]
             target = " ".join(parts[:-1])
 
+    # For modifier clicks, we need coordinates — skip AX action, go straight to coordinate click
+    if modifiers:
+        from nexus.sense.access import find_elements
+        matches = find_elements(target, pid)
+        if role:
+            role_lower = role.lower()
+            ax_target = ROLE_MAP.get(role_lower)
+            matches = [m for m in matches
+                       if m.get("_ax_role") == ax_target or role_lower in m.get("role", "").lower()]
+        if not matches:
+            return {"ok": False, "error": f'Element "{target}" not found'}
+        el = matches[0]
+        pos, size = el.get("pos"), el.get("size")
+        if pos and size:
+            cx, cy = pos[0] + size[0] // 2, pos[1] + size[1] // 2
+            raw_input.modifier_click(cx, cy, _resolve_modifiers(modifiers))
+            clean = {k: v for k, v in el.items() if not k.startswith("_")}
+            return {"ok": True, "action": "modifier_click", "element": clean,
+                    "at": [cx, cy], "modifiers": modifiers}
+        return {"ok": False, "error": f'Element "{target}" has no position'}
+
     result = native.click_element(target, pid=pid, role=role)
 
-    # If native click worked but we need double/right click, use coordinates
-    if result.get("ok") and (double or right):
+    # If element not found, try learned label translation (e.g. "Save" → "guardar")
+    if not result.get("ok") and "not found" in result.get("error", "").lower():
+        try:
+            from nexus.mind.learn import lookup_label
+            app_name = _current_app_name(pid)
+            mapped = lookup_label(target, app_name)
+            if mapped and mapped.lower() != target.lower():
+                retry = native.click_element(mapped, pid=pid, role=role)
+                if retry.get("ok"):
+                    retry["via_label"] = f"{target} -> {mapped}"
+                    return retry
+        except Exception:
+            pass
+
+    # If native click worked but we need double/right/triple click, use coordinates
+    if result.get("ok") and (double or right or triple):
         at = result.get("at")
         if at:
-            if double:
+            if triple:
+                raw_input.triple_click(at[0], at[1])
+            elif double:
                 raw_input.double_click(at[0], at[1])
             elif right:
                 raw_input.right_click(at[0], at[1])
@@ -724,7 +946,7 @@ def _handle_click(target, double=False, right=False, pid=None):
     return result
 
 
-def _click_nth(ordinal_info, double=False, right=False, pid=None):
+def _click_nth(ordinal_info, double=False, right=False, triple=False, modifiers=None, pid=None):
     """Click the nth element matching a role (and optional label).
 
     Args:
@@ -734,14 +956,6 @@ def _click_nth(ordinal_info, double=False, right=False, pid=None):
     from nexus.sense.access import describe_app, ax_actions, ax_perform
 
     n, role, label = ordinal_info
-
-    # Map user-facing role names to raw AXRole values (locale-independent)
-    ROLE_MAP = {
-        "button": "AXButton", "link": "AXLink", "tab": "AXTab",
-        "menu": "AXMenuItem", "field": "AXTextField", "checkbox": "AXCheckBox",
-        "radio": "AXRadioButton", "text": "AXStaticText", "image": "AXImage",
-        "slider": "AXSlider", "switch": "AXSwitch", "toggle": "AXSwitch",
-    }
     ax_role = ROLE_MAP.get(role)
 
     elements = describe_app(pid)
@@ -790,20 +1004,29 @@ def _click_nth(ordinal_info, double=False, right=False, pid=None):
     if not ref:
         return {"ok": False, "error": "No element reference"}
 
-    # Click via AX action
+    # Click via AX action (skip for modifier/double/right/triple clicks)
     actions = ax_actions(ref)
     clicked = False
-    if "AXPress" in actions:
-        clicked = ax_perform(ref, "AXPress")
-    elif "AXConfirm" in actions:
-        clicked = ax_perform(ref, "AXConfirm")
+    if not (double or right or triple or modifiers):
+        if "AXPress" in actions:
+            clicked = ax_perform(ref, "AXPress")
+        elif "AXConfirm" in actions:
+            clicked = ax_perform(ref, "AXConfirm")
 
-    # Handle double/right click or fallback to coordinates
+    # Handle modifier/double/right/triple click or fallback to coordinates
     pos = target.get("pos")
     size = target.get("size")
+    at = None
     if pos and size:
         cx, cy = pos[0] + size[0] // 2, pos[1] + size[1] // 2
-        if double:
+        at = [cx, cy]
+        if modifiers:
+            raw_input.modifier_click(cx, cy, _resolve_modifiers(modifiers))
+            clicked = True
+        elif triple:
+            raw_input.triple_click(cx, cy)
+            clicked = True
+        elif double:
             raw_input.double_click(cx, cy)
             clicked = True
         elif right:
@@ -815,14 +1038,17 @@ def _click_nth(ordinal_info, double=False, right=False, pid=None):
 
     if clicked:
         clean = {k: v for k, v in target.items() if not k.startswith("_")}
-        return {
+        result = {
             "ok": True,
             "action": f"click_{role}_{n}",
             "element": clean,
-            "at": [cx, cy] if pos and size else None,
+            "at": at,
             "ordinal": n,
             "of_total": len(matches),
         }
+        if modifiers:
+            result["modifiers"] = modifiers
+        return result
 
     return {"ok": False, "error": f'Found {role} #{n} but could not click it'}
 
@@ -871,24 +1097,48 @@ def _handle_press(keys_str):
     return {"ok": True, "action": "press", "keys": resolved}
 
 
-def _handle_scroll(direction):
-    """Handle scroll intents."""
-    direction = direction.lower().strip()
+def _handle_scroll(direction, pid=None):
+    """Handle scroll intents.
 
-    amount = 3  # Default scroll amount
-    # Check for "scroll down 5" pattern
-    parts = direction.split()
+    Patterns:
+        scroll down                     → scroll 3 clicks down
+        scroll up 5                     → scroll 5 clicks up
+        scroll down in <element>        → scroll at element center
+        scroll until <target>           → scroll down until target appears
+        scroll until <target> appears   → same
+    """
+    rest = direction.strip()
+    lower = rest.lower()
+
+    # "scroll until X appears" / "scroll until X"
+    until_match = re.match(r"until\s+(.+?)(?:\s+appears?)?\s*$", lower, re.IGNORECASE)
+    if until_match:
+        target = until_match.group(1).strip()
+        return _scroll_until(target, pid=pid)
+
+    # "scroll down in <element>" / "scroll up in <element>"
+    in_match = re.match(r"(down|up|d|u)(?:\s+(\d+))?\s+in\s+(.+)$", lower, re.IGNORECASE)
+    if in_match:
+        dir_word = in_match.group(1)
+        amount = int(in_match.group(2)) if in_match.group(2) else 3
+        element_name = in_match.group(3).strip()
+        return _scroll_in_element(dir_word, amount, element_name, pid=pid)
+
+    # Standard scroll: "scroll down", "scroll up 5", etc.
+    amount = 3
+    parts = lower.split()
     if len(parts) >= 2 and parts[-1].isdigit():
         amount = int(parts[-1])
         direction = parts[0]
+    else:
+        direction = lower
 
     if direction in ("down", "d"):
         return raw_input.scroll(-amount)
     elif direction in ("up", "u"):
         return raw_input.scroll(amount)
     elif direction in ("left", "l"):
-        # macOS horizontal scroll via pyautogui isn't great
-        raw_input.hotkey("shift", "scroll")  # Might not work
+        raw_input.hotkey("shift", "scroll")
         return {"ok": True, "action": "scroll_left", "note": "horizontal scroll may not work everywhere"}
     elif direction in ("right", "r"):
         return {"ok": True, "action": "scroll_right", "note": "horizontal scroll may not work everywhere"}
@@ -896,13 +1146,146 @@ def _handle_scroll(direction):
         return raw_input.scroll(-amount)  # Default: down
 
 
-def _handle_drag(rest):
-    """Handle drag intents: 'drag 100,200 to 300,400'."""
+def _scroll_in_element(direction, amount, element_name, pid=None):
+    """Scroll at the center of a named element (e.g. a list or panel)."""
+    from nexus.sense.access import find_elements
+
+    matches = find_elements(element_name, pid)
+    if not matches:
+        return {"ok": False, "error": f'Scroll target "{element_name}" not found'}
+
+    el = matches[0]
+    pos = el.get("pos")
+    size = el.get("size")
+    if not pos or not size:
+        return {"ok": False, "error": f'Element "{element_name}" has no position'}
+
+    cx = pos[0] + size[0] // 2
+    cy = pos[1] + size[1] // 2
+
+    clicks = -amount if direction in ("down", "d") else amount
+    return raw_input.scroll(clicks, x=cx, y=cy)
+
+
+def _scroll_until(target, direction="down", max_scrolls=20, pid=None):
+    """Scroll until a target element appears on screen.
+
+    Scrolls in the given direction, checking after each scroll whether
+    the target element is now visible. Gives up after max_scrolls.
+    """
+    import time
+    from nexus.sense.access import find_elements
+
+    clicks_per_scroll = 3
+    scroll_amount = -clicks_per_scroll if direction == "down" else clicks_per_scroll
+
+    for i in range(max_scrolls):
+        matches = find_elements(target, pid)
+        if matches:
+            el = matches[0]
+            clean = {k: v for k, v in el.items() if not k.startswith("_")}
+            return {
+                "ok": True,
+                "action": "scroll_until",
+                "element": clean,
+                "scrolls": i,
+                "direction": direction,
+            }
+        raw_input.scroll(scroll_amount)
+        time.sleep(0.3)
+
+    return {
+        "ok": False,
+        "error": f'"{target}" not found after {max_scrolls} scrolls {direction}',
+        "scrolls": max_scrolls,
+    }
+
+
+def _handle_hover(rest, pid=None):
+    """Handle hover intents: 'hover Save', 'hover over the search field'.
+
+    Moves mouse to element center without clicking. Useful for tooltips,
+    hover menus, and preview effects.
+    """
+    if not rest:
+        return {"ok": False, "error": "Hover over what? E.g.: hover Save, hover over search"}
+
+    target = rest.strip()
+    # Strip "over" prefix: "hover over Save" → "Save"
+    if target.lower().startswith("over "):
+        target = target[5:].strip()
+    if target.lower().startswith("the "):
+        target = target[4:].strip()
+
+    # Check for coordinate hover: "hover 340,220"
+    coord_match = re.match(r"(?:at\s+)?(\d+)[,\s]+(\d+)", target)
+    if coord_match:
+        x, y = int(coord_match.group(1)), int(coord_match.group(2))
+        return raw_input.hover(x, y)
+
+    # Find element and hover its center
+    from nexus.sense.access import find_elements
+    matches = find_elements(target, pid)
+    if not matches:
+        return {"ok": False, "error": f'Element "{target}" not found for hover'}
+
+    el = matches[0]
+    pos = el.get("pos")
+    size = el.get("size")
+    if pos and size:
+        cx, cy = pos[0] + size[0] // 2, pos[1] + size[1] // 2
+        raw_input.hover(cx, cy)
+        clean = {k: v for k, v in el.items() if not k.startswith("_")}
+        return {"ok": True, "action": "hover", "element": clean, "at": [cx, cy]}
+
+    return {"ok": False, "error": f'Element "{target}" has no position'}
+
+
+def _handle_drag(rest, pid=None):
+    """Handle drag intents: 'drag 100,200 to 300,400' or 'drag file.txt to Trash'.
+
+    Supports both coordinate-based and element-name-based drag.
+    """
+    # Coordinate drag: "drag 100,200 to 300,400"
     match = re.match(r"(\d+)[,\s]+(\d+)\s+to\s+(\d+)[,\s]+(\d+)", rest)
     if match:
         x1, y1, x2, y2 = int(match.group(1)), int(match.group(2)), int(match.group(3)), int(match.group(4))
         return raw_input.drag(x1, y1, x2, y2)
-    return {"ok": False, "error": "Drag format: 'drag x1,y1 to x2,y2'"}
+
+    # Element-based drag: "drag file.txt to Trash"
+    to_match = re.match(r"(.+?)\s+to\s+(.+)$", rest, re.IGNORECASE)
+    if to_match:
+        source_name = to_match.group(1).strip()
+        target_name = to_match.group(2).strip()
+
+        from nexus.sense.access import find_elements
+        src_matches = find_elements(source_name, pid)
+        if not src_matches:
+            return {"ok": False, "error": f'Drag source "{source_name}" not found'}
+
+        tgt_matches = find_elements(target_name, pid)
+        if not tgt_matches:
+            return {"ok": False, "error": f'Drag target "{target_name}" not found'}
+
+        src = src_matches[0]
+        tgt = tgt_matches[0]
+        sp, ss = src.get("pos"), src.get("size")
+        tp, ts = tgt.get("pos"), tgt.get("size")
+
+        if sp and ss and tp and ts:
+            x1 = sp[0] + ss[0] // 2
+            y1 = sp[1] + ss[1] // 2
+            x2 = tp[0] + ts[0] // 2
+            y2 = tp[1] + ts[1] // 2
+            raw_input.drag(x1, y1, x2, y2)
+            return {
+                "ok": True, "action": "drag",
+                "from_element": source_name, "to_element": target_name,
+                "from": [x1, y1], "to": [x2, y2],
+            }
+        return {"ok": False, "error": "Found elements but missing positions"}
+
+    return {"ok": False, "error": "Drag format: 'drag x1,y1 to x2,y2' or 'drag Source to Target'"}
 
 
 def _handle_tile(rest):
@@ -921,34 +1304,200 @@ def _handle_tile(rest):
 
 
 def _handle_move(rest):
-    """Handle: 'move window left', 'move window right', 'move Safari left'."""
-    lower = rest.lower()
+    """Handle window positioning intents.
+
+    Patterns:
+        move window left/right/center/full    — halves / center / maximize
+        move window top/bottom                — top / bottom half
+        move window top-left/top-right/...    — quarters
+        move window left-third/center-third/right-third — thirds
+        move Safari left                      — named app
+        move Safari to 100,200                — position at coordinates
+        move window 2 left                    — specific window index
+    """
+    lower = rest.lower().strip()
     from nexus.act.input import screen_size
     sz = screen_size()
-    half_w = sz["width"] // 2
-    h = sz["height"] - 25
+    sw, sh = sz["width"], sz["height"]
+    menu_y = 25
+    usable_h = sh - menu_y
+    half_w = sw // 2
+    half_h = usable_h // 2
+    third_w = sw // 3
 
-    # Parse optional app name: "move Safari left" or "move window left"
     app_name = None
+    window_index = 1
     direction = lower
-    words = lower.split()
-    if len(words) >= 2:
-        direction = words[-1]
-        candidate = " ".join(words[:-1])
-        if candidate != "window":
-            app_name = candidate
 
-    if direction in ("left", "l"):
-        return native.move_window(app_name, x=0, y=25, w=half_w, h=h)
-    elif direction in ("right", "r"):
-        return native.move_window(app_name, x=half_w, y=25, w=half_w, h=h)
-    elif direction in ("center", "centre", "c"):
-        qw = sz["width"] // 4
-        return native.move_window(app_name, x=qw, y=25, w=half_w, h=h)
-    elif direction in ("full", "max", "maximize"):
-        return native.maximize_window(app_name)
+    # Check for "window N <direction>"
+    win_idx_match = re.match(r"window\s+(\d+)\s+(.+)$", lower)
+    if win_idx_match:
+        window_index = int(win_idx_match.group(1))
+        direction = win_idx_match.group(2).strip()
     else:
-        return {"ok": False, "error": f'Unknown direction: {direction}. Use: left, right, center, full'}
+        # Check for coordinate move: "[app] to X,Y"
+        coord_match = re.match(r"(?:(.+?)\s+)?to\s+(\d+)\s*[,\s]\s*(\d+)", rest.strip(), re.IGNORECASE)
+        if coord_match:
+            candidate = coord_match.group(1)
+            x, y = int(coord_match.group(2)), int(coord_match.group(3))
+            if candidate and candidate.lower() != "window":
+                app_name = candidate
+            return native.move_window(app_name, x=x, y=y, window_index=window_index)
+
+        words = lower.split()
+        if len(words) >= 2:
+            direction = words[-1]
+            candidate = " ".join(words[:-1])
+            if candidate != "window":
+                app_name = candidate
+
+    # Grid positions
+    grid = {
+        # Halves (left/right existing, top/bottom new)
+        "left": (0, menu_y, half_w, usable_h),
+        "l": (0, menu_y, half_w, usable_h),
+        "right": (half_w, menu_y, half_w, usable_h),
+        "r": (half_w, menu_y, half_w, usable_h),
+        "top": (0, menu_y, sw, half_h),
+        "bottom": (0, menu_y + half_h, sw, half_h),
+        # Quarters
+        "top-left": (0, menu_y, half_w, half_h),
+        "topleft": (0, menu_y, half_w, half_h),
+        "top-right": (half_w, menu_y, half_w, half_h),
+        "topright": (half_w, menu_y, half_w, half_h),
+        "bottom-left": (0, menu_y + half_h, half_w, half_h),
+        "bottomleft": (0, menu_y + half_h, half_w, half_h),
+        "bottom-right": (half_w, menu_y + half_h, half_w, half_h),
+        "bottomright": (half_w, menu_y + half_h, half_w, half_h),
+        # Thirds
+        "left-third": (0, menu_y, third_w, usable_h),
+        "leftthird": (0, menu_y, third_w, usable_h),
+        "center-third": (third_w, menu_y, third_w, usable_h),
+        "centerthird": (third_w, menu_y, third_w, usable_h),
+        "middle-third": (third_w, menu_y, third_w, usable_h),
+        "right-third": (2 * third_w, menu_y, third_w, usable_h),
+        "rightthird": (2 * third_w, menu_y, third_w, usable_h),
+        # Center (existing)
+        "center": (sw // 4, menu_y, half_w, usable_h),
+        "centre": (sw // 4, menu_y, half_w, usable_h),
+        "c": (sw // 4, menu_y, half_w, usable_h),
+    }
+
+    if direction in ("full", "max", "maximize"):
+        return native.maximize_window(app_name)
+
+    if direction in grid:
+        x, y, w, h = grid[direction]
+        return native.move_window(app_name, x=x, y=y, w=w, h=h, window_index=window_index)
+
+    return {
+        "ok": False,
+        "error": (
+            f"Unknown position: {direction}. Use: left, right, top, bottom, "
+            "top-left, top-right, bottom-left, bottom-right, "
+            "left-third, center-third, right-third, center, full"
+        ),
+    }
+
+
+def _handle_minimize(rest):
+    """Handle: 'minimize', 'minimize Safari', 'minimize window 2'."""
+    if not rest:
+        return native.minimize_window()
+
+    lower = rest.lower().strip()
+
+    # "minimize window 2" or "minimize window 2 of Safari"
+    win_idx_match = re.match(r"window\s+(\d+)(?:\s+(?:of\s+)?(.+))?$", lower)
+    if win_idx_match:
+        idx = int(win_idx_match.group(1))
+        app_name = win_idx_match.group(2) if win_idx_match.group(2) else None
+        return native.minimize_window(app_name=app_name, window_index=idx)
+
+    # "minimize window" (no index)
+    if lower == "window":
+        return native.minimize_window()
+
+    # "minimize Safari"
+    return native.minimize_window(app_name=rest.strip())
+
+
+def _handle_restore(rest):
+    """Handle: 'restore', 'restore Safari', 'unminimize Chrome'."""
+    if not rest:
+        return native.unminimize_window()
+
+    if rest.lower().strip() == "window":
+        return native.unminimize_window()
+
+    return native.unminimize_window(app_name=rest.strip())
+
+
+def _handle_resize(rest, pid=None):
+    """Handle resize intents.
+
+    Patterns:
+        resize to 800x600           — resize focused window
+        resize 800x600              — same
+        resize Safari to 800x600    — resize Safari
+        resize to 50%               — resize to 50% of screen
+        resize Safari to 75%        — resize Safari to 75% of screen
+        resize window 2 to 800x600  — resize window #2
+    """
+    if not rest:
+        return {"ok": False, "error": 'Resize format: "resize to 800x600" or "resize to 50%"'}
+
+    from nexus.act.input import screen_size
+    sz = screen_size()
+    lower = rest.lower().strip()
+
+    # Try "window N to ..." first
+    win_idx_match = re.match(
+        r"window\s+(\d+)\s+(?:to\s+)?(\d+)\s*[xX*,]\s*(\d+)", lower
+    )
+    if win_idx_match:
+        idx = int(win_idx_match.group(1))
+        w, h = int(win_idx_match.group(2)), int(win_idx_match.group(3))
+        return native.resize_window(w=w, h=h, window_index=idx)
+
+    # Split into app_name + dimensions via "to" keyword
+    app_name = None
+    dims_str = lower
+    if " to " in lower:
+        parts = lower.split(" to ", 1)
+        candidate = parts[0].strip()
+        dims_str = parts[1].strip()
+        if candidate and candidate != "window":
+            app_name = rest.strip().split(" to ", 1)[0].strip()  # Preserve case
+    elif lower.startswith("to "):
+        dims_str = lower[3:].strip()
+
+    # Try percentage: N%
+    pct_match = re.match(r"(\d+)\s*%$", dims_str)
+    if pct_match:
+        pct = int(pct_match.group(1))
+        w = int(sz["width"] * pct / 100)
+        h = int((sz["height"] - 25) * pct / 100)
+        return native.resize_window(app_name=app_name, w=w, h=h)
+
+    # Try absolute: WxH (or W,H or W*H)
+    abs_match = re.match(r"(\d+)\s*[xX*,]\s*(\d+)$", dims_str)
+    if abs_match:
+        w, h = int(abs_match.group(1)), int(abs_match.group(2))
+        return native.resize_window(app_name=app_name, w=w, h=h)
+
+    return {"ok": False, "error": f'Could not parse resize dimensions from: "{rest}"'}
+
+
+def _handle_fullscreen(rest):
+    """Handle: 'fullscreen Safari', 'fullscreen', 'exit fullscreen'."""
+    if not rest:
+        return native.fullscreen_window()
+
+    if rest.lower().strip() == "window":
+        return native.fullscreen_window()
+
+    return native.fullscreen_window(app_name=rest.strip())
 
 
 def _handle_wait(rest, pid=None):
@@ -998,6 +1547,37 @@ def _handle_wait(rest, pid=None):
 
     # Fallback: treat as "wait for <rest>"
     return _poll_for(rest, appear=True, pid=pid)
+
+
+def _handle_observe(rest, pid=None):
+    """Handle observe start/stop/clear/status intents."""
+    from nexus.sense.observe import start_observing, stop_observing, drain_events, is_observing, status
+    from nexus.sense.access import frontmost_app
+
+    cmd = rest.strip().lower() if rest else "start"
+
+    if cmd in ("start", "on", "begin", ""):
+        if pid is None:
+            app = frontmost_app()
+            if not app:
+                return {"ok": False, "error": "No frontmost app to observe"}
+            pid = app["pid"]
+            app_name = app["name"]
+        else:
+            app_name = ""
+        return start_observing(pid, app_name)
+
+    if cmd in ("stop", "off", "end"):
+        return stop_observing(pid)
+
+    if cmd in ("clear", "flush", "reset"):
+        drain_events()
+        return {"ok": True, "action": "observe_clear"}
+
+    if cmd in ("status", "info"):
+        return status()
+
+    return {"ok": False, "error": f'Unknown observe command: "{rest}". Use: start, stop, clear, status'}
 
 
 def _poll_for(target, appear=True, timeout=10, interval=0.5, pid=None):
@@ -1139,6 +1719,75 @@ def _strip_quotes(text):
         if (text[0] == '"' and text[-1] == '"') or (text[0] == "'" and text[-1] == "'"):
             return text[1:-1]
     return text
+
+
+# ---------------------------------------------------------------------------
+# Modifier key resolution
+# ---------------------------------------------------------------------------
+
+_MODIFIER_MAP = {
+    "shift": "shift",
+    "cmd": "command", "command": "command",
+    "opt": "option", "option": "option", "alt": "option",
+    "ctrl": "control", "control": "control",
+}
+
+
+def _resolve_modifiers(modifiers):
+    """Resolve modifier shorthand names to pyautogui key names."""
+    return [_MODIFIER_MAP.get(m.lower(), m.lower()) for m in modifiers]
+
+
+# ---------------------------------------------------------------------------
+# Structured data getters — tables and lists
+# ---------------------------------------------------------------------------
+
+def _handle_read_table(pid=None):
+    """Read all tables in the focused window as structured data."""
+    from nexus.sense.access import find_tables
+    tables = find_tables(pid)
+    if not tables:
+        return {"ok": True, "action": "read_table", "text": "No tables found on screen."}
+
+    parts = []
+    for tbl in tables:
+        title = tbl.get("title", "")
+        headers = tbl.get("headers", [])
+        rows = tbl.get("rows", [])
+        title_part = f' "{title}"' if title else ""
+        parts.append(f'Table{title_part}: {tbl["num_cols"]} columns, {tbl["num_rows"]} rows')
+        if headers:
+            parts.append(f'  Headers: {" | ".join(headers)}')
+        for i, row in enumerate(rows[:30]):
+            parts.append(f'  Row {i+1}: {" | ".join(str(c) for c in row)}')
+        if len(rows) > 30:
+            parts.append(f'  ... and {len(rows) - 30} more rows')
+
+    return {"ok": True, "action": "read_table", "text": "\n".join(parts)}
+
+
+def _handle_read_list(pid=None):
+    """Read all lists in the focused window as structured data."""
+    from nexus.sense.access import find_lists
+    lists = find_lists(pid)
+    if not lists:
+        return {"ok": True, "action": "read_list", "text": "No lists found on screen."}
+
+    parts = []
+    for lst in lists:
+        title = lst.get("title", "")
+        items = lst.get("items", [])
+        title_part = f' "{title}"' if title else ""
+        parts.append(f'List{title_part}: {lst["count"]} items')
+        for item in items[:30]:
+            idx = item["index"] + 1
+            label = item.get("label", "")
+            sel = " *selected*" if item.get("selected") else ""
+            parts.append(f'  {idx}. {label}{sel}')
+        if len(items) > 30:
+            parts.append(f'  ... and {len(items) - 30} more items')
+
+    return {"ok": True, "action": "read_list", "text": "\n".join(parts)}
 
 
 # ---------------------------------------------------------------------------

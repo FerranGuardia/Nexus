@@ -101,9 +101,16 @@ Under the hood, Nexus routes through accessibility APIs, AppleScript, keyboard/m
 - All via CDP (Chrome DevTools Protocol) — works alongside existing navigate/js intents
 
 ### Integration Test Suite
-- 433 tests total: 407 unit tests + 26 integration smoke tests
+- 546 tests total: 501 unit tests + 45 integration smoke tests
 - Smoke tests exercise real code paths: see() output structure, memory round-trips, do() getters
 - No mocking needed — tests run on any macOS machine with accessibility enabled
+
+### Perception Performance & Quality
+- **Single-pass tree walk**: `see()` collects elements, tables, and lists in one walk instead of three
+- **Tree cache (1s TTL)**: `describe_app()` caches results — 6x speedup on `do()` (snap→action→snap)
+- **Hierarchical grouping**: elements shown under container headings (Toolbar, Dialog, Tabs)
+- **Wrapper suppression**: AXGroup wrappers that duplicate interactive elements are filtered out
+- Result: 29% fewer elements, structured output, 3.4s saved per action
 
 ## Known Issues & Hard Truths
 
@@ -125,7 +132,7 @@ Nexus automates GUI apps — but most power users (the exact audience who'd inst
 `ensure_cdp()` auto-launches Chrome with `--remote-debugging-port=9222` if Chrome isn't running. If Chrome IS running without the flag, gives a clear restart message. Only auto-launches on explicit actions (navigate, js), not passive see(). Remaining: auto-detect and offer to restart Chrome.
 
 ### ~~6. Token Cost of `see()`~~ → SOLVED
-`see()` now caps at 80 elements (configurable), filters noise (unlabeled static text/images), and shows `... and N more (use query= to search)`. Menu bar capped to 150 items (depth ≤ 2).
+`see()` now caps at 80 elements (configurable), filters noise (unlabeled static text/images, wrapper groups), and shows `... and N more (use query= to search)`. Menu bar capped to 150 items (depth ≤ 2). Elements are grouped by container (Toolbar, Dialog, etc.) for better readability. Wrapper groups that duplicate interactive elements are automatically suppressed.
 
 ### 7. Locale Dependency
 macOS AXRoleDescription is localized — on a Spanish system, buttons are "botón", links are "enlace". The code uses AXRole (locale-independent) for matching, but user-facing output still shows localized strings. If someone writes `do("click the button")` on a Japanese system, fuzzy matching may struggle. This is partially handled but not robustly tested across locales.

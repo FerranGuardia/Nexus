@@ -13,6 +13,7 @@ nexus/
     access.py           # macOS accessibility tree (AXUIElement via pyobjc)
     screen.py           # Screenshots (Quartz/CoreGraphics)
     web.py              # Chrome DevTools Protocol (CDP) — web page content
+    observe.py          # AXObserver — background change detection
     fusion.py           # Unified see() — merges all senses
   act/                  # ACTION
     resolve.py          # Intent parsing: "click Save" → best action
@@ -26,7 +27,7 @@ nexus/
 
 | Tool | Purpose | Example |
 |------|---------|---------|
-| `see` | What's on screen (accessibility tree, windows, focus, screenshot, diff, content) | `see()`, `see(query="Save")`, `see(content=True)` |
+| `see` | What's on screen (accessibility tree, windows, tables, lists, screenshot, diff, content, observe) | `see()`, `see(query="Save")`, `see(observe=True)` |
 | `do` | Execute an intent (synonyms, chains, ordinals, spatial, app targeting) | `do("tap Save")`, `do("click button near search")` |
 | `memory` | Persistent key-value store | `memory(op="set", key="x", value="y")` |
 
@@ -37,6 +38,7 @@ nexus/
 - `menus` — include the app's full menu bar (every command + shortcuts)
 - `diff` — compare with previous snapshot, show what changed
 - `content` — include text content from documents, text areas, fields (reads what's *in* the app)
+- `observe` — start observing this app for changes (AXObserver). Events are buffered and included in subsequent `see()` calls automatically
 
 ### `do` parameters
 - `action` — intent string like "click Save", "type hello in search"
@@ -49,14 +51,22 @@ nexus/
 click <target>              click File > Save As        type <text>
 click the 2nd <role>        click the last button       click <role> 3
 click <role> near <ref>     click <role> below <ref>    click <role> in <region>
+double-click <target>       right-click <target>        triple-click <target>
+shift-click <target>        cmd-click <target>          option-click <target>
+hover <target>              hover over <element>        mouseover <target>
+drag <src> to <dest>        drag 100,200 to 300,400     (coords or elements)
+click <X> in row with <Y>   click <X> in row 3          (container scoping)
 type <text> in <target>     press cmd+s                 open <app>
 fill Name=value, Email=val  fill form Name=x, Age=y     (multi-field)
 wait for <element>          wait 2s                     wait until X disappears
 switch to <app>             scroll down/up              focus <target>
+scroll down in <element>    scroll until <target>       (targeted scrolling)
 navigate <url>              js <expression>             (Chrome CDP)
 switch tab <n>              new tab [url]               close tab [n]
 close / quit / exit         copy / paste / undo / redo  select all
 get clipboard               get url                     get tabs
+read table                  read list                   (structured data)
+observe start               observe stop                observe status/clear
 tile <app> and <app>        move window left/right      maximize
 menu <path>                 notify <message>            say <text>
 ```

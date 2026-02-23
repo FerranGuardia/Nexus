@@ -16,7 +16,14 @@ mcp = FastMCP(
         "Nexus gives you eyes and hands on a Mac. "
         "Use `see` first to understand what's on screen, "
         "then `do` to act on it. "
-        "Use `memory` to remember things across sessions."
+        "Use `memory` to remember things across sessions.\n\n"
+        "IMPORTANT: Nexus is for GUI interaction only — clicking, typing, window management, "
+        "and controlling apps that have no API or CLI. "
+        "If you already have tools that can fetch web pages, read files, run shell commands, "
+        "or call APIs — use THOSE instead. Don't use Nexus to read web content when you can "
+        "fetch the URL directly. Don't use `see` to read a file when you have a file reader. "
+        "Use `do('get url')` to discover what's in the browser, then fetch it yourself. "
+        "Nexus is the physical layer — only use it for what you literally cannot do without it."
     ),
 )
 
@@ -37,6 +44,7 @@ def see(
     menus: bool = False,
     diff: bool = False,
     content: bool = False,
+    observe: bool = False,
 ) -> str | list:
     """See what's on screen right now.
 
@@ -51,14 +59,18 @@ def see(
         diff: Compare with previous snapshot — show what changed since last see().
         content: Include text content from documents, text areas, and fields.
             Shows what's written in the app, not just the UI chrome.
+        observe: Start observing this app for changes. Events are buffered
+            and included in subsequent see() calls automatically.
 
     Call this first to understand what the user sees.
     For apps with many elements, use query= to search instead of browsing the full tree.
     When Chrome is focused, `see` includes web page content via CDP.
     """
-    from nexus.sense.fusion import see as _see
+    from nexus.sense.fusion import see as _see, _resolve_pid
 
-    result = _see(app=app, query=query, screenshot=screenshot, menus=menus, diff=diff, content=content)
+    # Resolve app name to PID at server level (avoids MCP parameter passing issues)
+    pid = _resolve_pid(app) if app else None
+    result = _see(app=pid, query=query, screenshot=screenshot, menus=menus, diff=diff, content=content, observe=observe)
 
     # If screenshot requested, return multimodal content
     if result.get("image"):
@@ -99,6 +111,14 @@ def do(action: str, app: str | None = None) -> str:
         click <role> near <ref>  - Click element nearest to a reference
         click <role> below <ref> - Click element below a reference (also: above, left of, right of)
         click <role> in <region> - Click element in screen region (top-right, bottom-left, center...)
+        shift-click <target>     - Click while holding Shift (multi-select)
+        cmd-click <target>       - Click while holding Command
+        option-click <target>    - Click while holding Option
+        double-click <target>    - Double-click (open files, edit cells, select words)
+        right-click <target>     - Right-click (context menus)
+        triple-click <target>    - Triple-click (select line/paragraph)
+        click <X> in row with <Y> - Click element in a table row matching Y
+        hover <target>           - Move mouse over element (tooltips, hover menus)
         type <text>              - Type into focused element
         type <text> in <target>  - Find a field, focus it, type
         fill Name=x, Email=y    - Fill multiple fields at once
@@ -106,19 +126,41 @@ def do(action: str, app: str | None = None) -> str:
         open <app>               - Launch an application
         switch to <app>          - Bring an app to front
         scroll down/up           - Scroll the page
+        scroll down in <element> - Scroll inside a specific element
+        scroll until <target>    - Keep scrolling until element appears
+        drag <src> to <dest>     - Drag element to another (or coordinates)
         focus <target>           - Find & focus an element
         close                    - Close the focused window
         copy / paste / undo      - Common shortcuts
         get clipboard            - Read clipboard contents
         get url / get tabs       - Safari info
+        read table               - Extract structured table data
+        read list                - Extract structured list data
+        minimize                 - Minimize the focused window
+        minimize <app>           - Minimize a specific app's window
+        restore <app>            - Unminimize / restore a window
+        resize to WxH            - Resize window to specific dimensions
+        resize <app> to WxH      - Resize a specific app's window
+        resize to N%             - Resize window to percentage of screen
         tile <app> and <app>     - Tile two windows side by side
-        move window left/right   - Position window on screen half
-        maximize                 - Maximize focused window
+        move window left/right   - Position window (halves, quarters, thirds, coordinates)
+        move window top-left     - Position in a quarter of the screen
+        move window top/bottom   - Position in top or bottom half
+        move window left-third   - Position in a screen third
+        move <app> to X,Y        - Move window to specific coordinates
+        maximize                 - Maximize focused window (fills screen)
+        fullscreen               - Toggle true macOS fullscreen (green button)
+        exit fullscreen          - Exit fullscreen mode
+        where is <app>?          - Get window position, size, and state
         navigate <url>           - Open URL in Chrome (CDP)
         js <expression>          - Run JavaScript in Chrome (CDP)
         switch tab <n>           - Switch Chrome tab by number or title (CDP)
         new tab [url]            - Open new Chrome tab (CDP)
         close tab [n]            - Close Chrome tab (CDP)
+        observe start             - Start watching for UI changes (buffered in see())
+        observe stop              - Stop watching
+        observe status            - Show what's being observed
+        observe clear             - Discard buffered events
         notify <message>         - macOS notification
         say <text>               - Speak aloud
 
@@ -141,10 +183,14 @@ def do(action: str, app: str | None = None) -> str:
         from nexus.sense.fusion import _resolve_pid
         pid = _resolve_pid(app)
 
+    # Detect which app should have focus after this action
+    focus_app = _detect_focus_target(action, app)
+
     # Determine if this action mutates the screen (skip verification for getters)
     lower = action.strip().lower()
     is_getter = any(lower.startswith(g) for g in (
         "get ", "read ", "clipboard", "url", "tabs", "source", "selection",
+        "hover", "table", "list", "observe", "where ", "window info",
     ))
 
     # Snapshot before (skip for read-only actions)
@@ -157,6 +203,27 @@ def do(action: str, app: str | None = None) -> str:
             before = None
 
     result = _do(action, pid=pid)
+
+    # Record action outcome for learning (label correlation + history)
+    try:
+        from nexus.mind.learn import record_action, record_failure, correlate_success
+        app_name = _app_name_for_learning(app, pid)
+        verb, target = _parse_verb_target(action)
+        if result.get("ok"):
+            correlated = correlate_success(app_name, verb, target)
+            record_action(
+                app_name=app_name, intent=action, ok=True,
+                verb=verb, target=target,
+                method=result.get("action"),
+                via_label=result.get("via_label") or (target if correlated else None),
+            )
+        else:
+            if "not found" in result.get("error", "").lower():
+                record_failure(app_name, verb, target)
+            record_action(app_name=app_name, intent=action, ok=False,
+                          verb=verb, target=target)
+    except Exception:
+        pass  # Learning must never break the action pipeline
 
     # Snapshot after + verify (brief pause lets UI update)
     changes = ""
@@ -192,6 +259,9 @@ def do(action: str, app: str | None = None) -> str:
         if changes:
             parts.append("")
             parts.append(changes)
+        # Restore focus to target app (VS Code steals it back on MCP response)
+        if focus_app:
+            _schedule_focus_restore(focus_app)
         return "\n".join(parts)
     else:
         parts = [f"Failed: {action}", f'  Error: {result.get("error", "unknown")}']
@@ -229,7 +299,22 @@ def memory(
         list  - See all keys:   memory(op="list")
         delete - Remove a key:  memory(op="delete", key="editor")
         clear - Delete all:     memory(op="clear")
+        stats - Show learning stats (label mappings, action history size)
     """
+    # Learning stats — separate from user memory
+    if op.lower().strip() == "stats":
+        try:
+            from nexus.mind.learn import stats as learn_stats
+            s = learn_stats()
+            parts = [
+                f"Label mappings: {s['label_mappings']} app-specific, {s['global_mappings']} global",
+                f"Actions recorded: {s['actions_recorded']}",
+                f"Apps tracked: {s['apps_tracked']}",
+            ]
+            return "\n".join(parts)
+        except Exception:
+            return "Learning system not initialized."
+
     from nexus.mind.store import memory as _memory
 
     result = _memory(op=op, key=key, value=value)
@@ -250,6 +335,99 @@ def memory(
         return "OK"
     else:
         return f'Error: {result.get("error", "unknown")}'
+
+
+def _app_name_for_learning(app_param, pid):
+    """Get app name for learning records."""
+    if app_param:
+        return app_param
+    from nexus.sense.access import frontmost_app
+    info = frontmost_app()
+    return info["name"] if info else ""
+
+
+def _parse_verb_target(action):
+    """Extract verb and target from an action string."""
+    parts = action.strip().split(None, 1)
+    verb = parts[0].lower() if parts else ""
+    target = parts[1] if len(parts) > 1 else ""
+    # Normalize common verb synonyms
+    from nexus.act.resolve import VERB_SYNONYMS
+    verb = VERB_SYNONYMS.get(verb, verb)
+    return verb, target
+
+
+def _detect_focus_target(action, app_param):
+    """Detect which app should have focus after this action.
+
+    Returns app name string if focus should be restored, None otherwise.
+    Only triggers for actions that explicitly move focus to another app.
+    """
+    # For action chains, check the last action (it determines final focus)
+    if ";" in action:
+        parts = action.split(";")
+        last_action = parts[-1].strip()
+        # But also check earlier actions for app switches
+        for part in reversed(parts):
+            result = _detect_focus_target(part.strip(), app_param)
+            if result:
+                return result
+        return None
+
+    lower = action.strip().lower()
+
+    # Getter actions never need focus restore
+    if any(lower.startswith(g) for g in (
+        "get ", "read ", "clipboard", "url", "tabs", "source",
+        "hover", "observe",
+    )):
+        return None
+
+    # "switch to Safari", "open Safari" — extract target app name
+    for prefix in ("switch to ", "activate ", "bring "):
+        if lower.startswith(prefix):
+            target = action.strip()[len(prefix):]
+            if target and not target.lower().startswith("tab"):
+                return target
+
+    if lower.startswith("open "):
+        target = action.strip()[5:]
+        # Don't restore for "open file.txt" — only for app names
+        if target and "." not in target and "/" not in target:
+            return target
+
+    # app= parameter targets a specific app — restore focus there
+    # (only for mutating actions like click, type, press)
+    if app_param and any(lower.startswith(v) for v in (
+        "click", "type", "press", "fill", "scroll", "drag",
+        "focus", "close", "select", "tap", "hit",
+    )):
+        return app_param
+
+    return None
+
+
+def _schedule_focus_restore(app_name, delay=0.4):
+    """Restore focus to an app after VS Code steals it back.
+
+    Spawns a background thread that waits for VS Code to reclaim focus,
+    then re-activates the target app via AppleScript.
+    """
+    import threading
+    import subprocess
+
+    def _restore():
+        import time
+        time.sleep(delay)
+        try:
+            subprocess.run(
+                ["osascript", "-e", f'tell application "{app_name}" to activate'],
+                capture_output=True, timeout=5,
+            )
+        except Exception:
+            pass
+
+    threading.Thread(target=_restore, daemon=True).start()
 
 
 def main():

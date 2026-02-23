@@ -27,13 +27,8 @@ def click_element(name, pid=None, role=None):
 
     if role:
         role_lower = role.lower()
-        # Match against both localized display role and raw AXRole
-        ax_map = {
-            "button": "AXButton", "link": "AXLink", "tab": "AXTab",
-            "menu": "AXMenuItem", "field": "AXTextField", "checkbox": "AXCheckBox",
-            "radio": "AXRadioButton", "text": "AXStaticText",
-        }
-        ax_target = ax_map.get(role_lower)
+        from nexus.act.resolve import ROLE_MAP
+        ax_target = ROLE_MAP.get(role_lower)
         matches = [
             m for m in matches
             if m.get("_ax_role") == ax_target or role_lower in m.get("role", "").lower()
@@ -297,7 +292,21 @@ def clipboard_write(text):
 # Window management
 # ---------------------------------------------------------------------------
 
-def move_window(app_name=None, x=None, y=None, w=None, h=None):
+def _pid_for_app_name(name):
+    """Resolve app name to PID from running apps."""
+    from nexus.sense.access import running_apps
+    name_lower = name.lower()
+    for app in running_apps():
+        if app["name"].lower() == name_lower:
+            return app["pid"]
+    # Partial match
+    for app in running_apps():
+        if name_lower in app["name"].lower():
+            return app["pid"]
+    return None
+
+
+def move_window(app_name=None, x=None, y=None, w=None, h=None, window_index=1):
     """Move/resize a window via AppleScript System Events."""
     if not app_name:
         info = frontmost_app()
@@ -308,9 +317,9 @@ def move_window(app_name=None, x=None, y=None, w=None, h=None):
 
     parts = []
     if x is not None and y is not None:
-        parts.append(f"set position of window 1 to {{{x}, {y}}}")
+        parts.append(f"set position of window {window_index} to {{{x}, {y}}}")
     if w is not None and h is not None:
-        parts.append(f"set size of window 1 to {{{w}, {h}}}")
+        parts.append(f"set size of window {window_index} to {{{w}, {h}}}")
 
     if not parts:
         return {"ok": False, "error": "Need position (x,y) or size (w,h)"}
@@ -324,6 +333,152 @@ def move_window(app_name=None, x=None, y=None, w=None, h=None):
         end tell
     '''
     return run_applescript(script)
+
+
+def minimize_window(app_name=None, window_index=1):
+    """Minimize a window via AppleScript System Events."""
+    if not app_name:
+        info = frontmost_app()
+        if info:
+            app_name = info["name"]
+    if not app_name:
+        return {"ok": False, "error": "No app specified"}
+
+    script = f'''
+        tell application "System Events"
+            tell process "{app_name}"
+                set miniaturized of window {window_index} to true
+            end tell
+        end tell
+    '''
+    result = run_applescript(script)
+    if result.get("ok"):
+        return {"ok": True, "action": "minimize", "app": app_name, "window": window_index}
+    return result
+
+
+def unminimize_window(app_name=None):
+    """Restore (unminimize) an app's window."""
+    if not app_name:
+        info = frontmost_app()
+        if info:
+            app_name = info["name"]
+    if not app_name:
+        return {"ok": False, "error": "No app specified"}
+
+    script = f'''
+        tell application "{app_name}" to activate
+        delay 0.3
+        tell application "System Events"
+            tell process "{app_name}"
+                try
+                    set miniaturized of window 1 to false
+                end try
+            end tell
+        end tell
+    '''
+    result = run_applescript(script)
+    if result.get("ok"):
+        return {"ok": True, "action": "unminimize", "app": app_name}
+    return result
+
+
+def resize_window(app_name=None, w=None, h=None, window_index=1):
+    """Resize a window without moving it."""
+    if not app_name:
+        info = frontmost_app()
+        if info:
+            app_name = info["name"]
+    if not app_name:
+        return {"ok": False, "error": "No app specified"}
+    if w is None or h is None:
+        return {"ok": False, "error": "Need width and height"}
+
+    script = f'''
+        tell application "System Events"
+            tell process "{app_name}"
+                set size of window {window_index} to {{{w}, {h}}}
+            end tell
+        end tell
+    '''
+    result = run_applescript(script)
+    if result.get("ok"):
+        return {"ok": True, "action": "resize", "app": app_name, "size": [w, h]}
+    return result
+
+
+def fullscreen_window(app_name=None):
+    """Toggle true macOS fullscreen (green button) for an app's window."""
+    if not app_name:
+        info = frontmost_app()
+        if info:
+            app_name = info["name"]
+            pid = info["pid"]
+        else:
+            return {"ok": False, "error": "No app specified"}
+    else:
+        pid = _pid_for_app_name(app_name)
+        if not pid:
+            return {"ok": False, "error": f"App '{app_name}' not found"}
+
+    # Try AXFullScreen attribute (most reliable)
+    app_ref = AXUIElementCreateApplication(pid)
+    window = ax_attr(app_ref, "AXFocusedWindow") or ax_attr(app_ref, "AXMainWindow")
+    if window:
+        current = ax_attr(window, "AXFullScreen")
+        target = not bool(current) if current is not None else True
+        success = ax_set(window, "AXFullScreen", target)
+        if success:
+            action = "enter_fullscreen" if target else "exit_fullscreen"
+            return {"ok": True, "action": action, "app": app_name}
+
+    # Fallback: Ctrl+Cmd+F (standard fullscreen shortcut)
+    from nexus.act.input import hotkey
+    launch_app(app_name)
+    import time
+    time.sleep(0.2)
+    hotkey("command", "ctrl", "f")
+    return {"ok": True, "action": "toggle_fullscreen", "app": app_name, "via": "shortcut"}
+
+
+def window_info(app_name=None):
+    """Get window position, size, and state for an app."""
+    if not app_name:
+        info = frontmost_app()
+        if info:
+            app_name = info["name"]
+            pid = info["pid"]
+        else:
+            return {"ok": False, "error": "No app specified"}
+    else:
+        pid = _pid_for_app_name(app_name)
+        if not pid:
+            return {"ok": False, "error": f"App '{app_name}' not found"}
+
+    from nexus.sense.access import _extract_point, _extract_size
+    app_ref = AXUIElementCreateApplication(pid)
+    window = ax_attr(app_ref, "AXFocusedWindow") or ax_attr(app_ref, "AXMainWindow")
+    if not window:
+        return {"ok": False, "error": f"No window found for {app_name}"}
+
+    pos = _extract_point(ax_attr(window, "AXPosition"))
+    sz = _extract_size(ax_attr(window, "AXSize"))
+    title = ax_attr(window, "AXTitle") or ""
+    minimized = ax_attr(window, "AXMinimized")
+    fullscreen = ax_attr(window, "AXFullScreen")
+
+    return {
+        "ok": True,
+        "action": "window_info",
+        "app": app_name,
+        "title": title,
+        "x": pos[0] if pos else 0,
+        "y": pos[1] if pos else 0,
+        "w": sz[0] if sz else 0,
+        "h": sz[1] if sz else 0,
+        "minimized": bool(minimized) if minimized is not None else False,
+        "fullscreen": bool(fullscreen) if fullscreen is not None else False,
+    }
 
 
 def tile_windows(app1, app2):

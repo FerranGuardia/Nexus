@@ -10,7 +10,7 @@ from nexus.sense import access, screen
 _last_snapshot = None
 
 
-def see(app=None, query=None, screenshot=False, menus=False, diff=False, content=False, max_elements=80):
+def see(app=None, query=None, screenshot=False, menus=False, diff=False, content=False, observe=False, max_elements=80):
     """Main perception function. Returns a text snapshot of the computer.
 
     Args:
@@ -21,6 +21,8 @@ def see(app=None, query=None, screenshot=False, menus=False, diff=False, content
         diff: Compare with previous snapshot — show what changed.
         content: Include text content from documents, text areas, and fields.
             Shows what's written in the app, not just the UI structure.
+        observe: Start observing this app for changes. Events are buffered
+            and included in subsequent see() calls automatically.
         max_elements: Max elements to display (default 80). Use query= to
             search within large apps instead of raising this.
 
@@ -93,8 +95,24 @@ def see(app=None, query=None, screenshot=False, menus=False, diff=False, content
             if remaining > 0:
                 result_parts.append(f"  ... and {remaining} more menu items")
 
+    # Observation — start if requested, always drain buffered events
+    obs_pid = pid or (app_info["pid"] if app_info else None)
+    if observe and obs_pid:
+        from nexus.sense.observe import start_observing, is_observing
+        if not is_observing(obs_pid):
+            app_name = app_info["name"] if app_info else ""
+            start_observing(obs_pid, app_name)
+
+    from nexus.sense.observe import drain_events, format_events
+    obs_events = drain_events()
+    if obs_events:
+        result_parts.append("")
+        result_parts.append(format_events(obs_events))
+
     # Elements (search or full tree)
     result_parts.append("")
+    tables = []
+    lists = []
     if query:
         elements = access.find_elements(query, pid)
         result_parts.append(f'Search "{query}" ({len(elements)} matches):')
@@ -102,24 +120,47 @@ def see(app=None, query=None, screenshot=False, menus=False, diff=False, content
         for el in elements:
             result_parts.append(f"  {_format_element(el)}")
     else:
-        # Fetch up to 150 from the tree, then filter and cap for display
+        # Single-pass: fetch elements, tables, and lists in one tree walk
         fetch_limit = max(max_elements * 2, 150)
-        elements = access.describe_app(pid, max_elements=fetch_limit)
+        full = access.full_describe(pid, max_elements=fetch_limit)
+        elements = full["elements"]
+        tables = full["tables"]
+        lists = full["lists"]
 
-        # Filter out noise (unlabeled static text / images)
+        # Filter out noise (unlabeled static text/images, wrapper groups)
         clean = [el for el in elements if not _is_noise_element(el)]
+        clean = _suppress_wrapper_groups(clean)
 
         total = len(clean)
         shown = clean[:max_elements]
         result_parts.append(f"Elements ({total}):")
-        for el in shown:
-            result_parts.append(f"  {_format_element(el)}")
+        result_parts.extend(_render_grouped_elements(shown))
         remaining = total - len(shown)
         if remaining > 0:
             result_parts.append(f"  ... and {remaining} more (use query= to search)")
 
     if not elements:
         result_parts.append("  (no elements found)")
+
+    # Structured tables — from the single-pass walk (or separate for query mode)
+    if not tables and not query:
+        pass  # Already collected above
+    elif query:
+        tables = access.find_tables(pid)
+    if tables:
+        result_parts.append("")
+        for tbl in tables:
+            result_parts.append(_format_table(tbl))
+
+    # Structured lists — from the single-pass walk (or separate for query mode)
+    if not lists and not query:
+        pass  # Already collected above
+    elif query:
+        lists = access.find_lists(pid)
+    if lists:
+        result_parts.append("")
+        for lst in lists:
+            result_parts.append(_format_list(lst))
 
     # Content reading — show what's *in* text areas, documents, fields
     if content:
@@ -139,6 +180,19 @@ def see(app=None, query=None, screenshot=False, menus=False, diff=False, content
                 result_parts.append(f'  [{item["role"]}]{label_part}:')
                 for line in preview.split("\n"):
                     result_parts.append(f"    {line}")
+
+    # Learning hints — show what the system has learned about this app
+    if app_info:
+        try:
+            from nexus.mind.learn import hints_for_app
+            hints = hints_for_app(app_info.get("name", ""))
+            if hints:
+                result_parts.append("")
+                result_parts.append("Learned:")
+                for line in hints.split("\n"):
+                    result_parts.append(f"  {line}")
+        except Exception:
+            pass
 
     # CDP web content — enrich when Chrome is active
     if app_info and _is_browser(app_info.get("name", "")):
@@ -182,6 +236,82 @@ def _is_noise_element(el):
         if ax_role in ("statictext", "static text", "image"):
             return True
     return False
+
+
+def _suppress_wrapper_groups(elements):
+    """Remove AXGroup elements that just duplicate nearby interactive elements.
+
+    Catches the common macOS pattern where a group wraps a single button:
+        [group "Save"] [button "Save"]  →  keep only [button "Save"]
+
+    Only suppresses groups whose label matches a non-group element.
+    Groups with unique labels (no matching interactive element) are kept.
+    """
+    non_group_labels = set()
+    for el in elements:
+        label = el.get("label", "")
+        if label and el.get("_ax_role") != "AXGroup":
+            non_group_labels.add(label)
+
+    return [el for el in elements
+            if el.get("_ax_role") != "AXGroup"
+            or el.get("label", "") not in non_group_labels]
+
+
+def _render_grouped_elements(elements):
+    """Render elements with container group headings.
+
+    Two-pass: first count non-container elements per group, then render.
+    Only shows headings for groups with 2+ useful elements.
+    Suppresses redundant container elements under their own heading.
+
+    Returns:
+        list of formatted lines.
+    """
+    # Pass 1: count useful (non-container) elements per group
+    group_counts = {}
+    for el in elements:
+        group = el.get("_group")
+        if not _is_group_container(el):
+            group_counts[group] = group_counts.get(group, 0) + 1
+
+    # Pass 2: render
+    lines = []
+    current_group = None
+    MIN_FOR_HEADING = 2
+
+    for el in elements:
+        group = el.get("_group")
+        useful_count = group_counts.get(group, 0)
+        show_heading = group is not None and useful_count >= MIN_FOR_HEADING
+
+        if group != current_group:
+            current_group = group
+            if show_heading:
+                display = group[:60] + "..." if len(group) > 60 else group
+                lines.append(f"  {display}:")
+
+        # Skip container noise under its own heading
+        if show_heading and _is_group_container(el):
+            continue
+
+        indent = "    " if show_heading else "  "
+        lines.append(f"{indent}{_format_element(el)}")
+
+    return lines
+
+
+# Container AX roles — these create group headings, so showing them
+# as elements under their own heading is redundant noise.
+_GROUP_AX_ROLES = frozenset({
+    "AXToolbar", "AXSheet", "AXDialog", "AXTabGroup",
+    "AXGroup", "AXScrollArea", "AXSplitGroup",
+})
+
+
+def _is_group_container(el):
+    """Is this element a group container (redundant when shown under its heading)?"""
+    return el.get("_ax_role", "") in _GROUP_AX_ROLES
 
 
 def _format_element(el):
@@ -398,6 +528,85 @@ def _compute_diff(old, new):
 
     header = f"Changes ({len(added)} new, {len(removed)} gone, {len(changed)} modified):"
     return header + "\n" + "\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Structured data formatting
+# ---------------------------------------------------------------------------
+
+def _format_table(tbl):
+    """Format a table dict as compact ASCII table."""
+    title = tbl.get("title", "")
+    headers = tbl.get("headers", [])
+    rows = tbl.get("rows", [])
+    num_rows = tbl.get("num_rows", 0)
+    num_cols = tbl.get("num_cols", 0)
+
+    title_part = f' "{title}"' if title else ""
+    lines = [f"Table{title_part} ({num_cols} cols x {num_rows} rows):"]
+
+    if not rows:
+        lines.append("  (empty)")
+        return "\n".join(lines)
+
+    # Calculate column widths (cap at 30 chars per column)
+    max_col_width = 30
+    col_widths = []
+    for c in range(num_cols):
+        w = len(headers[c]) if c < len(headers) else 4
+        for row in rows[:20]:  # Sample first 20 rows
+            if c < len(row):
+                w = max(w, len(str(row[c])[:max_col_width]))
+        col_widths.append(min(w, max_col_width))
+
+    def _fmt_row(cells):
+        parts = []
+        for c in range(num_cols):
+            val = str(cells[c])[:max_col_width] if c < len(cells) else ""
+            parts.append(val.ljust(col_widths[c]))
+        return "  | " + " | ".join(parts) + " |"
+
+    # Header
+    if headers:
+        lines.append(_fmt_row(headers))
+        lines.append("  |" + "|".join("-" * (w + 2) for w in col_widths) + "|")
+
+    # Data rows (cap at 20 for token efficiency)
+    for row in rows[:20]:
+        lines.append(_fmt_row(row))
+    if num_rows > 20:
+        lines.append(f"  ... and {num_rows - 20} more rows")
+
+    return "\n".join(lines)
+
+
+def _format_list(lst):
+    """Format a list dict as numbered items."""
+    title = lst.get("title", "")
+    items = lst.get("items", [])
+    count = lst.get("count", 0)
+    list_type = lst.get("type", "list")
+
+    title_part = f' "{title}"' if title else ""
+    type_name = "Outline" if list_type == "outline" else "List"
+    lines = [f"{type_name}{title_part} ({count} items):"]
+
+    if not items:
+        lines.append("  (empty)")
+        return "\n".join(lines)
+
+    for item in items[:30]:
+        idx = item["index"] + 1
+        label = item.get("label", "")
+        value = item.get("value", "")
+        selected = " *selected*" if item.get("selected") else ""
+        val_part = f" = {value}" if value else ""
+        lines.append(f"  {idx}. {label}{val_part}{selected}")
+
+    if count > 30:
+        lines.append(f"  ... and {count - 30} more items")
+
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
