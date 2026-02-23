@@ -262,7 +262,7 @@ def focused_element(pid=None):
     return _element_to_dict(el, focused=True)
 
 
-def _element_to_dict(el, focused=False):
+def _element_to_dict(el, focused=False, content=False):
     """Convert an AX element to a clean dict."""
     role = ax_attr(el, "AXRole") or ""
     role_desc = ax_attr(el, "AXRoleDescription") or ""
@@ -283,7 +283,9 @@ def _element_to_dict(el, focused=False):
     if value is not None:
         val_str = str(value)
         if val_str and val_str != label:
-            node["value"] = val_str[:300]
+            # In content mode, allow longer values for text areas
+            max_len = 2000 if content else 300
+            node["value"] = val_str[:max_len]
 
     if pos:
         node["pos"] = pos
@@ -399,6 +401,75 @@ def find_elements(query, pid=None):
 
     matches.sort(key=lambda x: x[0], reverse=True)
     return [el for _, el in matches]
+
+
+def read_content(pid=None, max_chars=5000):
+    """Read text content from the focused app's text areas and documents.
+
+    Extracts AXValue from text areas, text fields, and web areas.
+    For richer content, tries AXSelectedText and visible text ranges.
+
+    Args:
+        pid: Process ID (default: frontmost app).
+        max_chars: Maximum total characters to return.
+
+    Returns:
+        list of dicts with role, label, and content text.
+    """
+    if pid is None:
+        app = frontmost_app()
+        if not app:
+            return []
+        pid = app["pid"]
+
+    # Content-bearing roles
+    content_roles = {
+        "AXTextArea", "AXTextField", "AXStaticText", "AXWebArea",
+        "AXScrollArea", "AXGroup",
+    }
+
+    app_ref = AXUIElementCreateApplication(pid)
+    window = ax_attr(app_ref, "AXFocusedWindow") or ax_attr(app_ref, "AXMainWindow")
+    if not window:
+        return []
+
+    results = []
+    total_chars = 0
+
+    def _extract_content(element, depth=0):
+        nonlocal total_chars
+        if depth > 12 or total_chars >= max_chars:
+            return
+
+        role = ax_attr(element, "AXRole") or ""
+
+        if role in content_roles:
+            value = ax_attr(element, "AXValue")
+            if value is not None:
+                text = str(value).strip()
+                if text and len(text) > 2:  # Skip trivial content
+                    title = ax_attr(element, "AXTitle") or ax_attr(element, "AXDescription") or ""
+                    role_desc = ax_attr(element, "AXRoleDescription") or role.replace("AX", "").lower()
+                    remaining = max_chars - total_chars
+                    truncated = text[:remaining]
+                    results.append({
+                        "role": role_desc,
+                        "label": title,
+                        "content": truncated,
+                    })
+                    total_chars += len(truncated)
+                    if total_chars >= max_chars:
+                        return
+
+        children = ax_attr(element, "AXChildren")
+        if children:
+            for child in children:
+                _extract_content(child, depth + 1)
+                if total_chars >= max_chars:
+                    break
+
+    _extract_content(window)
+    return results
 
 
 def window_title(pid=None):

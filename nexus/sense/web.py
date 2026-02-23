@@ -381,3 +381,140 @@ def tab_list():
     targets = _get_targets()
     pages = [t for t in targets if t.get("type") == "page"]
     return [{"title": p.get("title", ""), "url": p.get("url", "")} for p in pages]
+
+
+def switch_tab(identifier):
+    """Switch to a Chrome tab by index (1-based) or title substring.
+
+    Args:
+        identifier: int for tab index, or str for title/URL match.
+
+    Returns:
+        dict with ok/error and tab info.
+    """
+    targets = _get_targets()
+    pages = [t for t in targets if t.get("type") == "page"]
+    if not pages:
+        return {"ok": False, "error": "No Chrome tabs found"}
+
+    target = None
+    if isinstance(identifier, int):
+        idx = identifier - 1  # 1-based to 0-based
+        if 0 <= idx < len(pages):
+            target = pages[idx]
+        else:
+            return {"ok": False, "error": f"Tab {identifier} not found (have {len(pages)} tabs)"}
+    else:
+        # Search by title or URL substring
+        query = identifier.lower()
+        for p in pages:
+            if query in p.get("title", "").lower() or query in p.get("url", "").lower():
+                target = p
+                break
+        if not target:
+            available = [p.get("title", "")[:50] for p in pages[:10]]
+            return {"ok": False, "error": f'No tab matching "{identifier}"', "tabs": available}
+
+    ws_url = target.get("webSocketDebuggerUrl")
+    if not ws_url:
+        return {"ok": False, "error": "Tab has no debug URL"}
+
+    try:
+        _connect(ws_url)
+        # Bring the tab to front
+        _send("Page.bringToFront")
+        return {
+            "ok": True,
+            "action": "switch_tab",
+            "title": target.get("title", ""),
+            "url": target.get("url", ""),
+        }
+    except Exception as e:
+        return {"ok": False, "error": f"Failed to switch tab: {e}"}
+
+
+def new_tab(url=None):
+    """Open a new Chrome tab, optionally navigating to a URL.
+
+    Args:
+        url: URL to navigate to (default: blank tab).
+
+    Returns:
+        dict with ok/error and new tab info.
+    """
+    target_url = url or "about:blank"
+    try:
+        # Create new tab via CDP HTTP endpoint
+        encoded = urllib.request.quote(target_url, safe=':/?#[]@!$&\'()*+,;=')
+        resp = urllib.request.urlopen(
+            f"{CDP_URL}/json/new?{encoded}", timeout=3
+        )
+        data = json.loads(resp.read())
+        ws_url = data.get("webSocketDebuggerUrl")
+        if ws_url:
+            _connect(ws_url)
+        return {
+            "ok": True,
+            "action": "new_tab",
+            "title": data.get("title", ""),
+            "url": data.get("url", target_url),
+        }
+    except Exception as e:
+        return {"ok": False, "error": f"Failed to open new tab: {e}"}
+
+
+def close_tab(identifier=None):
+    """Close a Chrome tab by index (1-based), title, or current tab.
+
+    Args:
+        identifier: int for tab index, str for title match, or None for current.
+
+    Returns:
+        dict with ok/error.
+    """
+    targets = _get_targets()
+    pages = [t for t in targets if t.get("type") == "page"]
+    if not pages:
+        return {"ok": False, "error": "No Chrome tabs found"}
+
+    target = None
+    if identifier is None:
+        # Close current (first) tab
+        target = pages[0]
+    elif isinstance(identifier, int):
+        idx = identifier - 1
+        if 0 <= idx < len(pages):
+            target = pages[idx]
+        else:
+            return {"ok": False, "error": f"Tab {identifier} not found (have {len(pages)} tabs)"}
+    else:
+        query = identifier.lower()
+        for p in pages:
+            if query in p.get("title", "").lower() or query in p.get("url", "").lower():
+                target = p
+                break
+        if not target:
+            return {"ok": False, "error": f'No tab matching "{identifier}"'}
+
+    tab_id = target.get("id")
+    if not tab_id:
+        return {"ok": False, "error": "Tab has no ID"}
+
+    try:
+        urllib.request.urlopen(f"{CDP_URL}/json/close/{tab_id}", timeout=3)
+        # If we closed the current tab, disconnect
+        global _ws
+        with _ws_lock:
+            if _ws:
+                try:
+                    _ws.close()
+                except Exception:
+                    pass
+                _ws = None
+        return {
+            "ok": True,
+            "action": "close_tab",
+            "title": target.get("title", ""),
+        }
+    except Exception as e:
+        return {"ok": False, "error": f"Failed to close tab: {e}"}

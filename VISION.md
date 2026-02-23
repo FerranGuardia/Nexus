@@ -74,6 +74,37 @@ Under the hood, Nexus routes through accessibility APIs, AppleScript, keyboard/m
 - `do("navigate <url>")` and `do("js <expression>")` for direct web control
 - `ensure_cdp()` auto-launches Chrome with debugging port if not running
 
+### Flexible Intent Resolution
+- Verb synonym expansion: tap/hit/select → click, enter/input → type, visit/browse/load → navigate, launch/start → open
+- Multi-word phrase synonyms: "click on", "press on", "tap on", "go to" → normalized before dispatch
+- Action chains: `do("open Safari; navigate google.com; wait 1s")` — semicolon-separated, fail-fast
+- 327 tests covering intent parsing, synonyms, chains, and edge cases
+
+### Content Reading
+- `see(content=True)` — reads text content from documents, text areas, and fields
+- Shows what's *written* in the app, not just the UI structure
+- Extracts AXValue from text areas, text fields, web areas, and scroll areas
+- Smart truncation: up to 5000 chars across all content, preview for long documents
+
+### Spatial & Contextual Element Resolution
+- Proximity: `do("click button near search")` — finds nearest element to a reference
+- Directional: `do("click field below Username")` — above, below, left of, right of
+- Region-based: `do("click button in top-right")` — screen quadrant targeting
+- Supports role+label combos: `do("click close button near search")`
+- Alignment-weighted scoring: directional queries prefer elements in line with the reference
+- 7 regions: top-left, top-right, bottom-left, bottom-right, top, bottom, center
+
+### Multi-Tab Chrome Management
+- `do("switch tab 2")` or `do("switch tab Google")` — switch tabs by index or title
+- `do("new tab google.com")` — open new tab with optional URL
+- `do("close tab")` or `do("close tab 3")` — close current or specific tab
+- All via CDP (Chrome DevTools Protocol) — works alongside existing navigate/js intents
+
+### Integration Test Suite
+- 433 tests total: 407 unit tests + 26 integration smoke tests
+- Smoke tests exercise real code paths: see() output structure, memory round-trips, do() getters
+- No mocking needed — tests run on any macOS machine with accessibility enabled
+
 ## Known Issues & Hard Truths
 
 Honest assessment of where Nexus falls short, written so we can fix it.
@@ -84,17 +115,11 @@ Nexus automates GUI apps — but most power users (the exact audience who'd inst
 ### ~~2. Electron Blindness~~ → SOLVED
 ~~VS Code gives ~5 elements~~ → **59+ elements** after enabling `AXManualAccessibility`. Nexus now auto-detects Electron apps (VS Code, Slack, Discord, Figma, etc.) and sets this attribute, which tells Chromium to build the full native accessibility tree. Sidebar tabs, toolbar buttons, status bar, panel toggles — all visible and clickable. The fix waits up to 2s for the tree to build (Chromium does it async) and walks to depth 20 (Electron nests content deep). See `access.py`: `_ensure_electron_accessibility()`. For even richer access, VS Code can be launched with `--remote-debugging-port=9222` for full CDP integration.
 
-### 3. Fragile Intent Parser
-`resolve.py` is a ~770-line chain of `if/elif` regex matches. It works for the exact phrasings we've coded, but:
-- "click on the Save button" works, "hit Save" doesn't
-- "type hello in search" works, "enter hello into search" doesn't
-- Typos, synonyms, and slight rephrasing silently fall through to the wrong handler or fail
-- Every new intent means another regex and another branch
-
-This needs to become either a proper grammar/parser, or lean on the LLM to normalize intents before they reach Nexus. The current approach doesn't scale.
+### ~~3. Fragile Intent Parser~~ → SOLVED
+`resolve.py` now has a synonym expansion layer, spatial resolution, and ordinal parsing. "hit Save", "tap OK", "press on Submit", "visit google.com", "enter hello" all work. Spatial references work too: "button near search", "field below Username", "button in top-right". Multi-word phrases ("click on", "go to", "press on") are handled before single-word synonyms. Action chains run sequentially with fail-fast semantics. Remaining: typo tolerance.
 
 ### ~~4. Zero Test Suite~~ → SOLVED
-264 tests for intent parsing in `tests/test_resolve.py`. Covers ordinal parsing, intent routing, keyboard handling, scroll/drag/tile/move/type, URL normalization. All mocked — no real UI needed. Still needed: integration smoke tests for see/do/memory round-trip.
+327 tests for intent parsing in `tests/test_resolve.py`. Covers ordinal parsing, intent routing, keyboard handling, scroll/drag/tile/move/type, URL normalization, verb synonyms, action chains. All mocked — no real UI needed. Still needed: integration smoke tests for see/do/memory round-trip.
 
 ### ~~5. CDP Requires Manual Setup~~ → MOSTLY SOLVED
 `ensure_cdp()` auto-launches Chrome with `--remote-debugging-port=9222` if Chrome isn't running. If Chrome IS running without the flag, gives a clear restart message. Only auto-launches on explicit actions (navigate, js), not passive see(). Remaining: auto-detect and offer to restart Chrome.
@@ -117,11 +142,13 @@ What if Nexus remembered successful action patterns?
 
 Memory that makes Nexus better at resolving intents over time.
 
-### 2. Spatial & Contextual References
-The intent resolver understands ordinals but not spatial references:
-- "Click the button near the search field" (proximity)
-- "Select everything in the table" (contextual scope)
-- "The X button in the top-right corner" (position)
+### ~~2. Spatial & Contextual References~~ → SOLVED
+The intent resolver now handles spatial references:
+- `do("click button near search")` — proximity-based
+- `do("click field below Username")` — directional (above, below, left of, right of)
+- `do("click button in top-right")` — screen region targeting
+- Alignment-weighted scoring for directional queries. 433 tests cover all patterns.
+Remaining: container scoping ("select everything in the table").
 
 ### 3. Cross-Platform
 The architecture is deliberately layered:
@@ -131,12 +158,13 @@ The architecture is deliberately layered:
 A Linux backend (AT-SPI) or Windows backend (UIA) could slot in without changing
 the three-tool interface. The AI doesn't care which OS it's on.
 
-### 4. Deeper Web Integration
-CDP gives us page content and JS execution. Next steps:
-- Auto-launch Chrome with debugging port when needed
+### 4. Deeper Web Integration → MOSTLY SOLVED
+CDP gives us page content, JS execution, and multi-tab management. Done:
+- Auto-launch Chrome with debugging port when needed ✓
+- Multi-tab management: switch tab, new tab, close tab ✓
+Remaining:
 - Network request interception (watch API calls)
 - Console log capture (catch errors)
-- Multi-tab management (switch tabs, open new ones)
 
 ## Design Principles (Non-Negotiable)
 

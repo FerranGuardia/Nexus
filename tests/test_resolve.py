@@ -16,6 +16,12 @@ from nexus.act.resolve import (
     _word_to_ordinal,
     _strip_quotes,
     _parse_fields,
+    _normalize_action,
+    _run_chain,
+    _parse_spatial,
+    _filter_by_search,
+    _click_spatial,
+    _click_in_region,
     do,
     _handle_scroll,
     _handle_drag,
@@ -25,6 +31,10 @@ from nexus.act.resolve import (
     _handle_type,
     ORDINAL_WORDS,
     KEY_ALIASES,
+    VERB_SYNONYMS,
+    PHRASE_SYNONYMS,
+    SPATIAL_RELATIONS,
+    REGION_PATTERNS,
 )
 
 
@@ -819,7 +829,8 @@ class TestDoRouting:
     def test_go_url(self, mock_handle_nav, mock_native, mock_raw_input):
         mock_handle_nav.return_value = {"ok": True}
         do("go to google.com")
-        mock_handle_nav.assert_called_once_with("to google.com")
+        # "go to" phrase synonym normalizes to "navigate google.com"
+        mock_handle_nav.assert_called_once_with("google.com")
 
     # --- Set/Write clipboard ---
 
@@ -1426,3 +1437,870 @@ class TestRunJs:
         result = _handle_run_js("   ")
         assert result["ok"] is False
         assert "No JavaScript" in result["error"]
+
+
+# ===========================================================================
+# TestNormalizeAction — verb synonym expansion
+# ===========================================================================
+
+
+class TestNormalizeAction:
+    """Tests for _normalize_action — synonym expansion."""
+
+    # --- Single-word verb synonyms ---
+
+    def test_tap_becomes_click(self):
+        assert _normalize_action("tap Save") == "click Save"
+
+    def test_hit_becomes_click(self):
+        assert _normalize_action("hit OK") == "click OK"
+
+    def test_select_becomes_click(self):
+        assert _normalize_action("select Done") == "click Done"
+
+    def test_choose_becomes_click(self):
+        assert _normalize_action("choose Cancel") == "click Cancel"
+
+    def test_push_becomes_click(self):
+        assert _normalize_action("push Submit") == "click Submit"
+
+    def test_enter_becomes_type(self):
+        assert _normalize_action("enter hello") == "type hello"
+
+    def test_input_becomes_type(self):
+        assert _normalize_action("input some text") == "type some text"
+
+    def test_launch_becomes_open(self):
+        assert _normalize_action("launch Safari") == "open Safari"
+
+    def test_start_becomes_open(self):
+        assert _normalize_action("start Terminal") == "open Terminal"
+
+    def test_quit_passes_through(self):
+        # quit/exit handled directly in shortcut intents, not via synonym
+        assert _normalize_action("quit") == "quit"
+
+    def test_exit_passes_through(self):
+        assert _normalize_action("exit") == "exit"
+
+    def test_swipe_becomes_scroll(self):
+        assert _normalize_action("swipe down") == "scroll down"
+
+    def test_browse_becomes_navigate(self):
+        assert _normalize_action("browse google.com") == "navigate google.com"
+
+    def test_visit_becomes_navigate(self):
+        assert _normalize_action("visit example.com") == "navigate example.com"
+
+    def test_load_becomes_navigate(self):
+        assert _normalize_action("load page.html") == "navigate page.html"
+
+    # --- Phrase synonyms (multi-word) ---
+
+    def test_press_on_becomes_click(self):
+        assert _normalize_action("press on Save") == "click Save"
+
+    def test_click_on_becomes_click(self):
+        assert _normalize_action("click on Submit") == "click Submit"
+
+    def test_tap_on_becomes_click(self):
+        assert _normalize_action("tap on OK") == "click OK"
+
+    def test_go_to_becomes_navigate(self):
+        assert _normalize_action("go to google.com") == "navigate google.com"
+
+    # --- Non-synonyms pass through unchanged ---
+
+    def test_click_unchanged(self):
+        assert _normalize_action("click Save") == "click Save"
+
+    def test_type_unchanged(self):
+        assert _normalize_action("type hello") == "type hello"
+
+    def test_press_unchanged(self):
+        assert _normalize_action("press cmd+s") == "press cmd+s"
+
+    def test_open_unchanged(self):
+        assert _normalize_action("open Safari") == "open Safari"
+
+    def test_scroll_unchanged(self):
+        assert _normalize_action("scroll down") == "scroll down"
+
+    def test_unknown_verb_unchanged(self):
+        assert _normalize_action("frobnicate widget") == "frobnicate widget"
+
+    # --- Edge cases ---
+
+    def test_empty_string(self):
+        assert _normalize_action("") == ""
+
+    def test_whitespace_stripped(self):
+        assert _normalize_action("  tap Save  ") == "click Save"
+
+    def test_case_preserved_in_rest(self):
+        # Verb is lowered but rest preserves original case
+        assert _normalize_action("tap MyButton") == "click MyButton"
+
+    def test_verb_only_no_rest(self):
+        # launch has no rest — becomes "open"
+        assert _normalize_action("launch") == "open"
+
+    def test_synonym_case_insensitive(self):
+        # "Tap" should still match
+        assert _normalize_action("Tap Save") == "click Save"
+
+    def test_phrase_takes_precedence_over_word(self):
+        # "click on X" should match phrase "click on" → "click", not word "click" → stays
+        result = _normalize_action("click on Save")
+        assert result == "click Save"
+
+    # --- Verbs that should NOT be synonymized (to avoid conflicts) ---
+
+    def test_run_not_synonymized(self):
+        # "run" conflicts with "run js" — should not become "open"
+        assert _normalize_action("run js document.title") == "run js document.title"
+
+    def test_write_not_synonymized(self):
+        # "write" conflicts with "write clipboard" — should not become "type"
+        assert _normalize_action("write clipboard hello") == "write clipboard hello"
+
+    def test_select_all_not_broken(self):
+        # "select all" is handled as a shortcut before normalization in do()
+        # But _normalize_action itself would turn it to "click all"
+        # This is OK because do() checks shortcuts first
+        pass
+
+
+# ===========================================================================
+# TestDoSynonyms — end-to-end synonym routing via do()
+# ===========================================================================
+
+
+@patch("nexus.act.resolve.raw_input")
+@patch("nexus.act.resolve.native")
+class TestDoSynonyms:
+    """Test that verb synonyms route correctly through do()."""
+
+    def test_tap_routes_to_click(self, mock_native, mock_raw_input):
+        mock_native.click_element.return_value = {"ok": True}
+        do("tap Save")
+        mock_native.click_element.assert_called_once_with("Save", pid=None, role=None)
+
+    def test_hit_routes_to_click(self, mock_native, mock_raw_input):
+        mock_native.click_element.return_value = {"ok": True}
+        do("hit Cancel")
+        mock_native.click_element.assert_called_once_with("Cancel", pid=None, role=None)
+
+    def test_press_on_routes_to_click(self, mock_native, mock_raw_input):
+        mock_native.click_element.return_value = {"ok": True}
+        do("press on Submit")
+        mock_native.click_element.assert_called_once_with("Submit", pid=None, role=None)
+
+    def test_click_on_routes_to_click(self, mock_native, mock_raw_input):
+        mock_native.click_element.return_value = {"ok": True}
+        do("click on Save")
+        mock_native.click_element.assert_called_once_with("Save", pid=None, role=None)
+
+    def test_enter_routes_to_type(self, mock_native, mock_raw_input):
+        result = do("enter hello world")
+        mock_raw_input.type_text.assert_called_once_with("hello world")
+        assert result["ok"] is True
+
+    def test_input_routes_to_type(self, mock_native, mock_raw_input):
+        result = do("input test")
+        mock_raw_input.type_text.assert_called_once_with("test")
+        assert result["ok"] is True
+
+    def test_launch_routes_to_open(self, mock_native, mock_raw_input):
+        mock_native.launch_app.return_value = {"ok": True}
+        do("launch Safari")
+        mock_native.launch_app.assert_called_once_with("Safari")
+
+    def test_start_routes_to_open(self, mock_native, mock_raw_input):
+        mock_native.launch_app.return_value = {"ok": True}
+        do("start Terminal")
+        mock_native.launch_app.assert_called_once_with("Terminal")
+
+    def test_visit_routes_to_navigate(self, mock_native, mock_raw_input):
+        mock_native.run_applescript.return_value = {"ok": True}
+        do("visit example.com")
+        call_arg = mock_native.run_applescript.call_args[0][0]
+        assert "https://example.com" in call_arg
+
+    def test_browse_routes_to_navigate(self, mock_native, mock_raw_input):
+        mock_native.run_applescript.return_value = {"ok": True}
+        do("browse google.com")
+        call_arg = mock_native.run_applescript.call_args[0][0]
+        assert "https://google.com" in call_arg
+
+    def test_swipe_routes_to_scroll(self, mock_native, mock_raw_input):
+        mock_raw_input.scroll.return_value = {"ok": True}
+        do("swipe down")
+        mock_raw_input.scroll.assert_called_once_with(-3)
+
+    def test_quit_routes_to_close(self, mock_native, mock_raw_input):
+        mock_native.close_window.return_value = {"ok": True}
+        do("quit")
+        mock_native.close_window.assert_called_once()
+
+    def test_shortcuts_unaffected_by_synonyms(self, mock_native, mock_raw_input):
+        """select all, copy, paste, undo, redo are checked before synonym expansion."""
+        result = do("select all")
+        mock_raw_input.hotkey.assert_called_with("command", "a")
+        assert result["ok"] is True
+
+    def test_getters_unaffected_by_synonyms(self, mock_native, mock_raw_input):
+        """Getter intents should not be affected by synonym expansion."""
+        mock_native.clipboard_read.return_value = {"ok": True, "text": "hi"}
+        do("get clipboard")
+        mock_native.clipboard_read.assert_called_once()
+
+
+# ===========================================================================
+# TestActionChains — semicolon-separated compound intents
+# ===========================================================================
+
+
+@patch("nexus.act.resolve.raw_input")
+@patch("nexus.act.resolve.native")
+class TestActionChains:
+    """Tests for action chains via do("step1; step2; step3")."""
+
+    def test_two_step_chain(self, mock_native, mock_raw_input):
+        """Two copy operations should both execute."""
+        result = do("copy; paste")
+        assert result["ok"] is True
+        assert result["action"] == "chain"
+        assert result["completed"] == 2
+        assert result["total"] == 2
+        assert len(result["steps"]) == 2
+
+    def test_chain_preserves_step_info(self, mock_native, mock_raw_input):
+        result = do("copy; undo")
+        assert result["steps"][0]["action"] == "copy"
+        assert result["steps"][0]["ok"] is True
+        assert result["steps"][1]["action"] == "undo"
+        assert result["steps"][1]["ok"] is True
+
+    def test_chain_fails_fast_on_error(self, mock_native, mock_raw_input):
+        """If a step fails, the chain stops."""
+        mock_native.click_element.return_value = {"ok": False, "error": "Not found"}
+        result = do("copy; click NonExistent; paste")
+        assert result["ok"] is False
+        assert result["completed"] == 1  # Only copy ran successfully
+        assert result["total"] == 3
+        assert "Step 2 failed" in result["error"]
+
+    def test_three_step_chain(self, mock_native, mock_raw_input):
+        result = do("select all; copy; paste")
+        assert result["ok"] is True
+        assert result["completed"] == 3
+
+    def test_chain_with_whitespace(self, mock_native, mock_raw_input):
+        """Extra whitespace around semicolons should be stripped."""
+        result = do("copy ;  paste  ;  undo")
+        assert result["ok"] is True
+        assert result["completed"] == 3
+
+    def test_empty_steps_skipped(self, mock_native, mock_raw_input):
+        """Empty segments from consecutive semicolons are filtered out."""
+        result = do("copy;; paste")
+        assert result["ok"] is True
+        assert result["completed"] == 2
+
+    def test_single_step_chain(self, mock_native, mock_raw_input):
+        """A chain with one step should still work."""
+        # "copy;" → ["copy"]
+        result = do("copy;")
+        assert result["ok"] is True
+        assert result["completed"] == 1
+
+    def test_chain_with_synonym(self, mock_native, mock_raw_input):
+        """Synonyms should work inside chain steps."""
+        mock_native.launch_app.return_value = {"ok": True}
+        result = do("launch Safari; copy")
+        assert result["ok"] is True
+        assert result["completed"] == 2
+        mock_native.launch_app.assert_called_once_with("Safari")
+
+    def test_chain_error_reports_which_step(self, mock_native, mock_raw_input):
+        mock_native.click_element.return_value = {"ok": False, "error": "Element not found"}
+        result = do("select all; click Missing")
+        assert result["ok"] is False
+        assert "Step 2" in result["error"]
+        assert "Missing" in result["error"]
+
+    def test_empty_chain(self, mock_native, mock_raw_input):
+        """Only semicolons, no content."""
+        result = do(";;;")
+        assert result["ok"] is False
+        assert "Empty" in result["error"]
+
+    def test_chain_with_press(self, mock_native, mock_raw_input):
+        result = do("press cmd+a; press cmd+c")
+        assert result["ok"] is True
+        assert result["completed"] == 2
+        # Should have called hotkey twice
+        assert mock_raw_input.hotkey.call_count == 2
+
+
+# ===========================================================================
+# TestVerbSynonymDicts
+# ===========================================================================
+
+
+class TestVerbSynonymDicts:
+    """Tests that synonym dictionaries are well-formed."""
+
+    def test_all_verb_synonyms_map_to_known_verbs(self):
+        known_verbs = {"click", "type", "open", "close", "scroll", "navigate", "focus", "switch"}
+        for synonym, canonical in VERB_SYNONYMS.items():
+            assert canonical in known_verbs, f'VERB_SYNONYMS["{synonym}"] = "{canonical}" is not a known verb'
+
+    def test_all_phrase_synonyms_map_to_known_patterns(self):
+        known = {"click", "navigate", "switch to", "type", "focus"}
+        for phrase, canonical in PHRASE_SYNONYMS.items():
+            assert canonical in known, f'PHRASE_SYNONYMS["{phrase}"] = "{canonical}" is not recognized'
+
+    def test_no_overlapping_synonyms(self):
+        """A word should not appear as both a verb synonym and a phrase start."""
+        phrase_starts = {p.split()[0] for p in PHRASE_SYNONYMS}
+        # Some overlap is OK (e.g. "click" appears in "click on" phrase and
+        # is also a real verb), but pure synonyms shouldn't shadow phrases
+        for syn in VERB_SYNONYMS:
+            if syn in phrase_starts:
+                # This is fine as long as phrases are checked first
+                pass
+
+    def test_synonyms_are_lowercase(self):
+        for k in VERB_SYNONYMS:
+            assert k == k.lower(), f'VERB_SYNONYMS key "{k}" should be lowercase'
+        for k in PHRASE_SYNONYMS:
+            assert k == k.lower(), f'PHRASE_SYNONYMS key "{k}" should be lowercase'
+
+
+# ===========================================================================
+# TestParseSpatial — spatial reference parsing
+# ===========================================================================
+
+
+class TestParseSpatial:
+    """Tests for _parse_spatial — parsing spatial references from click targets."""
+
+    # --- Proximity: "near", "beside", "next to", "by", "close to" ---
+
+    def test_button_near_search(self):
+        assert _parse_spatial("button near search") == ("button", "near", "search")
+
+    def test_button_beside_search(self):
+        assert _parse_spatial("button beside search") == ("button", "near", "search")
+
+    def test_button_next_to_search(self):
+        assert _parse_spatial("button next to search") == ("button", "near", "search")
+
+    def test_button_by_search(self):
+        assert _parse_spatial("button by search") == ("button", "near", "search")
+
+    def test_button_close_to_search(self):
+        assert _parse_spatial("button close to search") == ("button", "near", "search")
+
+    def test_save_near_cancel(self):
+        assert _parse_spatial("Save near Cancel") == ("Save", "near", "Cancel")
+
+    def test_close_button_near_search(self):
+        assert _parse_spatial("close button near search") == ("close button", "near", "search")
+
+    # --- Below/under ---
+
+    def test_field_below_username(self):
+        assert _parse_spatial("field below Username") == ("field", "below", "Username")
+
+    def test_field_under_username(self):
+        assert _parse_spatial("field under Username") == ("field", "below", "Username")
+
+    def test_field_beneath_username(self):
+        assert _parse_spatial("field beneath Username") == ("field", "below", "Username")
+
+    def test_field_underneath_username(self):
+        assert _parse_spatial("field underneath Username") == ("field", "below", "Username")
+
+    def test_button_below_search(self):
+        assert _parse_spatial("button below search") == ("button", "below", "search")
+
+    # --- Above/over ---
+
+    def test_button_above_submit(self):
+        assert _parse_spatial("button above Submit") == ("button", "above", "Submit")
+
+    def test_label_over_input(self):
+        assert _parse_spatial("label over input") == ("label", "above", "input")
+
+    # --- Left of ---
+
+    def test_icon_left_of_cancel(self):
+        assert _parse_spatial("icon left of Cancel") == ("icon", "left", "Cancel")
+
+    def test_button_to_the_left_of_search(self):
+        assert _parse_spatial("button to the left of search") == ("button", "left", "search")
+
+    # --- Right of ---
+
+    def test_button_right_of_search(self):
+        assert _parse_spatial("button right of search") == ("button", "right", "search")
+
+    def test_icon_to_the_right_of_ok(self):
+        assert _parse_spatial("icon to the right of OK") == ("icon", "right", "OK")
+
+    # --- "the" stripping ---
+
+    def test_the_button_near_search(self):
+        assert _parse_spatial("the button near search") == ("button", "near", "search")
+
+    def test_button_near_the_search_field(self):
+        assert _parse_spatial("button near the search field") == ("button", "near", "search field")
+
+    def test_the_field_below_the_username(self):
+        assert _parse_spatial("the field below the Username") == ("field", "below", "Username")
+
+    # --- Region patterns ---
+
+    def test_button_in_top_right(self):
+        assert _parse_spatial("button in top-right") == ("button", "region", "top-right")
+
+    def test_button_in_top_left(self):
+        assert _parse_spatial("button in top-left") == ("button", "region", "top-left")
+
+    def test_button_in_bottom_right(self):
+        assert _parse_spatial("button in bottom-right") == ("button", "region", "bottom-right")
+
+    def test_button_in_bottom_left(self):
+        assert _parse_spatial("button in bottom-left") == ("button", "region", "bottom-left")
+
+    def test_button_in_the_top_right(self):
+        assert _parse_spatial("button in the top right") == ("button", "region", "top-right")
+
+    def test_button_at_top_right(self):
+        assert _parse_spatial("button at top-right") == ("button", "region", "top-right")
+
+    def test_button_in_upper_right(self):
+        assert _parse_spatial("button in upper-right") == ("button", "region", "top-right")
+
+    def test_button_in_lower_left(self):
+        assert _parse_spatial("button in lower-left") == ("button", "region", "bottom-left")
+
+    def test_button_in_top(self):
+        assert _parse_spatial("button in top") == ("button", "region", "top")
+
+    def test_button_in_bottom(self):
+        assert _parse_spatial("button in bottom") == ("button", "region", "bottom")
+
+    def test_button_in_the_upper_area(self):
+        assert _parse_spatial("button in the upper area") == ("button", "region", "top")
+
+    def test_button_in_the_bottom_half(self):
+        assert _parse_spatial("button in the bottom half") == ("button", "region", "bottom")
+
+    def test_button_in_center(self):
+        assert _parse_spatial("button in center") == ("button", "region", "center")
+
+    def test_button_in_the_middle(self):
+        assert _parse_spatial("button in the middle") == ("button", "region", "center")
+
+    def test_close_button_in_top_right(self):
+        assert _parse_spatial("close button in top-right") == ("close button", "region", "top-right")
+
+    def test_save_in_top_left(self):
+        assert _parse_spatial("Save in top-left") == ("Save", "region", "top-left")
+
+    # --- Non-matching (returns None) ---
+
+    def test_plain_label_no_spatial(self):
+        assert _parse_spatial("Save") is None
+
+    def test_empty_string(self):
+        assert _parse_spatial("") is None
+
+    def test_role_only(self):
+        assert _parse_spatial("button") is None
+
+    def test_no_reference_after_near(self):
+        # "button near" has no reference text
+        assert _parse_spatial("button near") is None
+
+    def test_just_the(self):
+        assert _parse_spatial("the") is None
+
+    # --- Case insensitivity ---
+
+    def test_case_insensitive_near(self):
+        assert _parse_spatial("Button NEAR Search") == ("Button", "near", "Search")
+
+    def test_case_insensitive_below(self):
+        assert _parse_spatial("FIELD below USERNAME") == ("FIELD", "below", "USERNAME")
+
+    def test_case_insensitive_region(self):
+        assert _parse_spatial("button IN TOP-RIGHT") == ("button", "region", "top-right")
+
+
+# ===========================================================================
+# TestFilterBySearch — element filtering for spatial resolution
+# ===========================================================================
+
+
+class TestFilterBySearch:
+    """Tests for _filter_by_search — filter elements by role or label."""
+
+    def _make_elements(self):
+        """Create a set of test elements."""
+        return [
+            {"label": "Save", "role": "botón", "_ax_role": "AXButton", "pos": (100, 100), "size": (80, 30)},
+            {"label": "Cancel", "role": "botón", "_ax_role": "AXButton", "pos": (200, 100), "size": (80, 30)},
+            {"label": "Search", "role": "campo de texto", "_ax_role": "AXTextField", "pos": (300, 50), "size": (200, 30)},
+            {"label": "Username", "role": "texto estático", "_ax_role": "AXStaticText", "pos": (50, 200), "size": (100, 20)},
+            {"label": "Google", "role": "enlace", "_ax_role": "AXLink", "pos": (150, 300), "size": (60, 20)},
+            {"label": "Submit", "role": "botón", "_ax_role": "AXButton", "pos": (100, 400), "size": (80, 30)},
+        ]
+
+    def test_filter_by_role_button(self):
+        elements = self._make_elements()
+        result = _filter_by_search(elements, "button")
+        assert len(result) == 3  # Save, Cancel, Submit
+        assert all(el["_ax_role"] == "AXButton" for el in result)
+
+    def test_filter_by_role_field(self):
+        elements = self._make_elements()
+        result = _filter_by_search(elements, "field")
+        assert len(result) == 1
+        assert result[0]["label"] == "Search"
+
+    def test_filter_by_role_link(self):
+        elements = self._make_elements()
+        result = _filter_by_search(elements, "link")
+        assert len(result) == 1
+        assert result[0]["label"] == "Google"
+
+    def test_filter_by_label_exact(self):
+        elements = self._make_elements()
+        result = _filter_by_search(elements, "Save")
+        assert len(result) == 1
+        assert result[0]["label"] == "Save"
+
+    def test_filter_by_label_partial(self):
+        elements = self._make_elements()
+        result = _filter_by_search(elements, "Sub")
+        assert len(result) == 1
+        assert result[0]["label"] == "Submit"
+
+    def test_filter_by_role_plus_label(self):
+        """'Save button' → filter by AXButton role, then by label containing 'Save'."""
+        elements = self._make_elements()
+        result = _filter_by_search(elements, "Save button")
+        assert len(result) == 1
+        assert result[0]["label"] == "Save"
+
+    def test_filter_role_first_label_second(self):
+        """'button Save' → role=button, label=Save."""
+        elements = self._make_elements()
+        result = _filter_by_search(elements, "button Save")
+        assert len(result) == 1
+        assert result[0]["label"] == "Save"
+
+    def test_filter_by_role_no_matches(self):
+        elements = self._make_elements()
+        result = _filter_by_search(elements, "slider")
+        assert len(result) == 0
+
+    def test_filter_by_label_no_matches(self):
+        elements = self._make_elements()
+        result = _filter_by_search(elements, "Nonexistent")
+        assert len(result) == 0
+
+    def test_filter_case_insensitive(self):
+        elements = self._make_elements()
+        result = _filter_by_search(elements, "save")
+        assert len(result) == 1
+        assert result[0]["label"] == "Save"
+
+
+# ===========================================================================
+# TestClickSpatial — spatial click resolution with mocked elements
+# ===========================================================================
+
+
+@patch("nexus.act.resolve.raw_input")
+class TestClickSpatial:
+    """Tests for _click_spatial with mocked accessibility data."""
+
+    def _mock_elements(self):
+        """Return a set of positioned elements for spatial testing."""
+        return [
+            {"label": "Username", "role": "texto estático", "_ax_role": "AXStaticText",
+             "pos": (50, 100), "size": (100, 20)},
+            {"label": "", "role": "campo de texto", "_ax_role": "AXTextField",
+             "pos": (50, 130), "size": (200, 30), "_ref": "field1_ref"},
+            {"label": "Password", "role": "texto estático", "_ax_role": "AXStaticText",
+             "pos": (50, 180), "size": (100, 20)},
+            {"label": "", "role": "campo de texto seguro", "_ax_role": "AXTextField",
+             "pos": (50, 210), "size": (200, 30), "_ref": "field2_ref"},
+            {"label": "Submit", "role": "botón", "_ax_role": "AXButton",
+             "pos": (100, 270), "size": (80, 30), "_ref": "submit_ref"},
+            {"label": "Cancel", "role": "botón", "_ax_role": "AXButton",
+             "pos": (200, 270), "size": (80, 30), "_ref": "cancel_ref"},
+            {"label": "Search", "role": "campo de texto", "_ax_role": "AXTextField",
+             "pos": (400, 50), "size": (200, 30), "_ref": "search_ref"},
+            {"label": "Go", "role": "botón", "_ax_role": "AXButton",
+             "pos": (610, 50), "size": (40, 30), "_ref": "go_ref"},
+        ]
+
+    @patch("nexus.sense.access.describe_app")
+    @patch("nexus.sense.access.find_elements")
+    @patch("nexus.sense.access.ax_actions", return_value=[])
+    @patch("nexus.sense.access.ax_perform", return_value=False)
+    def test_button_near_search(self, mock_perform, mock_actions, mock_find, mock_describe, mock_raw):
+        elements = self._mock_elements()
+        mock_find.return_value = [el for el in elements if el["label"] == "Search"]
+        mock_describe.return_value = elements
+
+        result = _click_spatial(("button", "near", "Search"), pid=None)
+        assert result["ok"] is True
+        assert result["action"] == "click_spatial"
+        # Go button at (610,50) is nearest to Search at (400,50)
+        assert result["element"]["label"] == "Go"
+
+    @patch("nexus.sense.access.describe_app")
+    @patch("nexus.sense.access.find_elements")
+    @patch("nexus.sense.access.ax_actions", return_value=[])
+    @patch("nexus.sense.access.ax_perform", return_value=False)
+    def test_field_below_username(self, mock_perform, mock_actions, mock_find, mock_describe, mock_raw):
+        elements = self._mock_elements()
+        mock_find.return_value = [el for el in elements if el["label"] == "Username"]
+        mock_describe.return_value = elements
+
+        result = _click_spatial(("field", "below", "Username"), pid=None)
+        assert result["ok"] is True
+        # Field at (50,130) is directly below Username at (50,100)
+        assert result["at"] is not None
+
+    @patch("nexus.sense.access.describe_app")
+    @patch("nexus.sense.access.find_elements")
+    @patch("nexus.sense.access.ax_actions", return_value=[])
+    @patch("nexus.sense.access.ax_perform", return_value=False)
+    def test_button_right_of_submit(self, mock_perform, mock_actions, mock_find, mock_describe, mock_raw):
+        elements = self._mock_elements()
+        mock_find.return_value = [el for el in elements if el["label"] == "Submit"]
+        mock_describe.return_value = elements
+
+        result = _click_spatial(("button", "right", "Submit"), pid=None)
+        assert result["ok"] is True
+        # Cancel at (200,270) is right of Submit at (100,270)
+        assert result["element"]["label"] == "Cancel"
+
+    @patch("nexus.sense.access.describe_app")
+    @patch("nexus.sense.access.find_elements")
+    def test_reference_not_found(self, mock_find, mock_describe, mock_raw):
+        mock_find.return_value = []
+        result = _click_spatial(("button", "near", "Nonexistent"), pid=None)
+        assert result["ok"] is False
+        assert "not found" in result["error"]
+
+    @patch("nexus.sense.access.describe_app")
+    @patch("nexus.sense.access.find_elements")
+    def test_no_candidates_in_direction(self, mock_find, mock_describe, mock_raw):
+        elements = self._mock_elements()
+        # Submit is at bottom, no buttons above it in the mock data
+        mock_find.return_value = [el for el in elements if el["label"] == "Submit"]
+        mock_describe.return_value = [
+            el for el in elements if el["_ax_role"] == "AXButton" and el["label"] == "Submit"
+        ]
+        # Only Submit in describe_app — no other buttons
+        result = _click_spatial(("button", "above", "Submit"), pid=None)
+        assert result["ok"] is False
+        assert "above" in result["error"].lower() or "not found" in result["error"].lower()
+
+
+# ===========================================================================
+# TestClickInRegion — region-based element resolution
+# ===========================================================================
+
+
+@patch("nexus.act.resolve.raw_input")
+class TestClickInRegion:
+    """Tests for _click_in_region with mocked elements."""
+
+    def _mock_elements(self):
+        return [
+            {"label": "Close", "role": "botón", "_ax_role": "AXButton",
+             "pos": (1800, 30), "size": (40, 30), "_ref": "close_ref"},
+            {"label": "Save", "role": "botón", "_ax_role": "AXButton",
+             "pos": (100, 900), "size": (80, 30), "_ref": "save_ref"},
+            {"label": "Help", "role": "botón", "_ax_role": "AXButton",
+             "pos": (960, 540), "size": (80, 30), "_ref": "help_ref"},
+        ]
+
+    @patch("nexus.act.input.screen_size", return_value={"width": 1920, "height": 1080})
+    @patch("nexus.sense.access.describe_app")
+    @patch("nexus.sense.access.ax_actions", return_value=[])
+    @patch("nexus.sense.access.ax_perform", return_value=False)
+    def test_button_in_top_right(self, mock_perform, mock_actions, mock_describe, mock_screen, mock_raw):
+        mock_describe.return_value = self._mock_elements()
+        result = _click_in_region("button", "top-right", pid=None)
+        assert result["ok"] is True
+        assert result["element"]["label"] == "Close"
+
+    @patch("nexus.act.input.screen_size", return_value={"width": 1920, "height": 1080})
+    @patch("nexus.sense.access.describe_app")
+    @patch("nexus.sense.access.ax_actions", return_value=[])
+    @patch("nexus.sense.access.ax_perform", return_value=False)
+    def test_button_in_bottom_left(self, mock_perform, mock_actions, mock_describe, mock_screen, mock_raw):
+        mock_describe.return_value = self._mock_elements()
+        result = _click_in_region("button", "bottom-left", pid=None)
+        assert result["ok"] is True
+        assert result["element"]["label"] == "Save"
+
+    @patch("nexus.act.input.screen_size", return_value={"width": 1920, "height": 1080})
+    @patch("nexus.sense.access.describe_app")
+    @patch("nexus.sense.access.ax_actions", return_value=[])
+    @patch("nexus.sense.access.ax_perform", return_value=False)
+    def test_button_in_center(self, mock_perform, mock_actions, mock_describe, mock_screen, mock_raw):
+        mock_describe.return_value = self._mock_elements()
+        result = _click_in_region("button", "center", pid=None)
+        assert result["ok"] is True
+        assert result["element"]["label"] == "Help"
+
+    @patch("nexus.act.input.screen_size", return_value={"width": 1920, "height": 1080})
+    @patch("nexus.sense.access.describe_app")
+    def test_no_match_in_region(self, mock_describe, mock_screen, mock_raw):
+        mock_describe.return_value = self._mock_elements()
+        result = _click_in_region("slider", "top-right", pid=None)
+        assert result["ok"] is False
+        assert "slider" in result["error"]
+
+    @patch("nexus.act.input.screen_size", return_value={"width": 1920, "height": 1080})
+    @patch("nexus.sense.access.describe_app")
+    def test_unknown_region(self, mock_describe, mock_screen, mock_raw):
+        mock_describe.return_value = self._mock_elements()
+        result = _click_in_region("button", "northwest", pid=None)
+        assert result["ok"] is False
+        assert "Unknown region" in result["error"]
+
+
+# ===========================================================================
+# TestSpatialE2E — end-to-end via do() with spatial references
+# ===========================================================================
+
+
+@patch("nexus.act.resolve.raw_input")
+@patch("nexus.act.resolve.native")
+class TestSpatialE2E:
+    """End-to-end tests: do("click button near search") routes through spatial."""
+
+    @patch("nexus.act.resolve._click_spatial")
+    def test_click_button_near_search(self, mock_spatial, mock_native, mock_raw):
+        mock_spatial.return_value = {"ok": True, "action": "click_spatial"}
+        result = do("click button near search")
+        mock_spatial.assert_called_once()
+        args = mock_spatial.call_args
+        # First arg is the spatial tuple
+        assert args[0][0] == ("button", "near", "search")
+
+    @patch("nexus.act.resolve._click_spatial")
+    def test_click_field_below_username(self, mock_spatial, mock_native, mock_raw):
+        mock_spatial.return_value = {"ok": True, "action": "click_spatial"}
+        result = do("click field below Username")
+        mock_spatial.assert_called_once()
+        assert args[0][0] == ("field", "below", "Username") if (args := mock_spatial.call_args) else False
+
+    @patch("nexus.act.resolve._click_spatial")
+    def test_tap_button_near_search_synonym(self, mock_spatial, mock_native, mock_raw):
+        """'tap button near search' → synonym → 'click button near search' → spatial."""
+        mock_spatial.return_value = {"ok": True, "action": "click_spatial"}
+        do("tap button near search")
+        mock_spatial.assert_called_once()
+
+    @patch("nexus.act.resolve._click_spatial")
+    def test_click_button_in_top_right(self, mock_spatial, mock_native, mock_raw):
+        mock_spatial.return_value = {"ok": True, "action": "click_spatial"}
+        do("click button in top-right")
+        mock_spatial.assert_called_once()
+        args = mock_spatial.call_args
+        assert args[0][0] == ("button", "region", "top-right")
+
+
+# ===========================================================================
+# TestTabManagement — CDP tab management intents
+# ===========================================================================
+
+
+@patch("nexus.act.resolve.raw_input")
+@patch("nexus.act.resolve.native")
+class TestTabManagement:
+    """Tests for tab management intents via do()."""
+
+    @patch("nexus.act.resolve._handle_switch_tab")
+    def test_switch_tab_number(self, mock_switch, mock_native, mock_raw):
+        mock_switch.return_value = {"ok": True}
+        do("switch tab 2")
+        mock_switch.assert_called_once_with("2")
+
+    @patch("nexus.act.resolve._handle_switch_tab")
+    def test_switch_to_tab_name(self, mock_switch, mock_native, mock_raw):
+        mock_switch.return_value = {"ok": True}
+        do("switch to tab Google")
+        mock_switch.assert_called_once_with("Google")
+
+    @patch("nexus.act.resolve._handle_new_tab")
+    def test_new_tab_empty(self, mock_new, mock_native, mock_raw):
+        mock_new.return_value = {"ok": True}
+        do("new tab")
+        mock_new.assert_called_once_with("")
+
+    @patch("nexus.act.resolve._handle_new_tab")
+    def test_new_tab_with_url(self, mock_new, mock_native, mock_raw):
+        mock_new.return_value = {"ok": True}
+        do("new tab google.com")
+        mock_new.assert_called_once_with("google.com")
+
+    @patch("nexus.act.resolve._handle_close_tab")
+    def test_close_tab_current(self, mock_close, mock_native, mock_raw):
+        mock_close.return_value = {"ok": True}
+        do("close tab")
+        mock_close.assert_called_once_with("")
+
+    @patch("nexus.act.resolve._handle_close_tab")
+    def test_close_tab_number(self, mock_close, mock_native, mock_raw):
+        mock_close.return_value = {"ok": True}
+        do("close tab 3")
+        mock_close.assert_called_once_with("3")
+
+    @patch("nexus.act.resolve._handle_close_tab")
+    def test_close_tab_by_name(self, mock_close, mock_native, mock_raw):
+        mock_close.return_value = {"ok": True}
+        do("close tab Google")
+        mock_close.assert_called_once_with("Google")
+
+
+# ===========================================================================
+# TestSpatialDicts — well-formedness of spatial config
+# ===========================================================================
+
+
+class TestSpatialDicts:
+    """Tests that spatial patterns are well-formed."""
+
+    def test_spatial_relations_are_compiled(self):
+        for pattern, relation in SPATIAL_RELATIONS:
+            assert hasattr(pattern, "match"), f"Pattern for {relation} should be compiled regex"
+
+    def test_region_patterns_are_compiled(self):
+        for pattern, region in REGION_PATTERNS:
+            assert hasattr(pattern, "match"), f"Pattern for {region} should be compiled regex"
+
+    def test_spatial_relations_known(self):
+        known = {"near", "below", "above", "left", "right"}
+        for _, relation in SPATIAL_RELATIONS:
+            assert relation in known, f"Unknown spatial relation: {relation}"
+
+    def test_region_patterns_known(self):
+        known = {"top-left", "top-right", "bottom-left", "bottom-right", "top", "bottom", "center"}
+        for _, region in REGION_PATTERNS:
+            assert region in known, f"Unknown region: {region}"

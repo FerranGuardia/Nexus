@@ -26,8 +26,8 @@ nexus/
 
 | Tool | Purpose | Example |
 |------|---------|---------|
-| `see` | What's on screen (accessibility tree, windows, focus, screenshot, diff) | `see()`, `see(query="Save")`, `see(diff=True)` |
-| `do` | Execute an intent (supports ordinals, app targeting) | `do("click Save")`, `do("click the 2nd button")`, `do("click OK", app="Safari")` |
+| `see` | What's on screen (accessibility tree, windows, focus, screenshot, diff, content) | `see()`, `see(query="Save")`, `see(content=True)` |
+| `do` | Execute an intent (synonyms, chains, ordinals, spatial, app targeting) | `do("tap Save")`, `do("click button near search")` |
 | `memory` | Persistent key-value store | `memory(op="set", key="x", value="y")` |
 
 ### `see` parameters
@@ -36,21 +36,26 @@ nexus/
 - `screenshot` — include a base64 JPEG screenshot
 - `menus` — include the app's full menu bar (every command + shortcuts)
 - `diff` — compare with previous snapshot, show what changed
+- `content` — include text content from documents, text areas, fields (reads what's *in* the app)
 
 ### `do` parameters
 - `action` — intent string like "click Save", "type hello in search"
+    - Chain actions with `;`: `do("open Safari; navigate to google.com; wait 1s")`
+    - Verb synonyms accepted: tap/hit/select → click, enter/input → type, visit/browse → navigate, launch/start → open
 - `app` — target a specific app by name (default: frontmost). Lets you act on background apps without switching focus.
 
 ### `do` intents
 ```
 click <target>              click File > Save As        type <text>
 click the 2nd <role>        click the last button       click <role> 3
+click <role> near <ref>     click <role> below <ref>    click <role> in <region>
 type <text> in <target>     press cmd+s                 open <app>
 fill Name=value, Email=val  fill form Name=x, Age=y     (multi-field)
 wait for <element>          wait 2s                     wait until X disappears
 switch to <app>             scroll down/up              focus <target>
 navigate <url>              js <expression>             (Chrome CDP)
-close                       copy / paste / undo / redo  select all
+switch tab <n>              new tab [url]               close tab [n]
+close / quit / exit         copy / paste / undo / redo  select all
 get clipboard               get url                     get tabs
 tile <app> and <app>        move window left/right      maximize
 menu <path>                 notify <message>            say <text>

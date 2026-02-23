@@ -36,6 +36,7 @@ def see(
     screenshot: bool = False,
     menus: bool = False,
     diff: bool = False,
+    content: bool = False,
 ) -> str | list:
     """See what's on screen right now.
 
@@ -48,13 +49,16 @@ def see(
         screenshot: Include a screenshot (adds ~50KB, use sparingly).
         menus: Include the app's menu bar (shows all available commands + shortcuts).
         diff: Compare with previous snapshot — show what changed since last see().
+        content: Include text content from documents, text areas, and fields.
+            Shows what's written in the app, not just the UI chrome.
 
     Call this first to understand what the user sees.
     For apps with many elements, use query= to search instead of browsing the full tree.
+    When Chrome is focused, `see` includes web page content via CDP.
     """
     from nexus.sense.fusion import see as _see
 
-    result = _see(app=app, query=query, screenshot=screenshot, menus=menus, diff=diff)
+    result = _see(app=app, query=query, screenshot=screenshot, menus=menus, diff=diff, content=content)
 
     # If screenshot requested, return multimodal content
     if result.get("image"):
@@ -84,6 +88,7 @@ def do(action: str, app: str | None = None) -> str:
 
     Args:
         action: Intent string like "click Save", "type hello in search".
+            Use semicolons to chain actions: "open Safari; navigate to google.com; wait 1s"
         app: Target app by name (default: frontmost). Use this to act on
              background apps without switching focus.
 
@@ -91,6 +96,9 @@ def do(action: str, app: str | None = None) -> str:
         click <target>           - Find & click element by name
         click <File > Save>      - Click a menu item by path
         click the 2nd <role>     - Click by ordinal (1st, 2nd, last...)
+        click <role> near <ref>  - Click element nearest to a reference
+        click <role> below <ref> - Click element below a reference (also: above, left of, right of)
+        click <role> in <region> - Click element in screen region (top-right, bottom-left, center...)
         type <text>              - Type into focused element
         type <text> in <target>  - Find a field, focus it, type
         fill Name=x, Email=y    - Fill multiple fields at once
@@ -108,8 +116,14 @@ def do(action: str, app: str | None = None) -> str:
         maximize                 - Maximize focused window
         navigate <url>           - Open URL in Chrome (CDP)
         js <expression>          - Run JavaScript in Chrome (CDP)
+        switch tab <n>           - Switch Chrome tab by number or title (CDP)
+        new tab [url]            - Open new Chrome tab (CDP)
+        close tab [n]            - Close Chrome tab (CDP)
         notify <message>         - macOS notification
         say <text>               - Speak aloud
+
+    Verbs are flexible — synonyms like "tap", "hit", "enter", "visit" work too.
+    Chain multiple actions with semicolons — fails fast on first error.
 
     Mutating actions automatically verify themselves — the response
     includes what changed on screen after the action.

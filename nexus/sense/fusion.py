@@ -10,7 +10,7 @@ from nexus.sense import access, screen
 _last_snapshot = None
 
 
-def see(app=None, query=None, screenshot=False, menus=False, diff=False, max_elements=80):
+def see(app=None, query=None, screenshot=False, menus=False, diff=False, content=False, max_elements=80):
     """Main perception function. Returns a text snapshot of the computer.
 
     Args:
@@ -19,6 +19,8 @@ def see(app=None, query=None, screenshot=False, menus=False, diff=False, max_ele
         screenshot: Include a base64 screenshot.
         menus: Include the app's menu bar items (shows available commands).
         diff: Compare with previous snapshot — show what changed.
+        content: Include text content from documents, text areas, and fields.
+            Shows what's written in the app, not just the UI structure.
         max_elements: Max elements to display (default 80). Use query= to
             search within large apps instead of raising this.
 
@@ -118,6 +120,25 @@ def see(app=None, query=None, screenshot=False, menus=False, diff=False, max_ele
 
     if not elements:
         result_parts.append("  (no elements found)")
+
+    # Content reading — show what's *in* text areas, documents, fields
+    if content:
+        content_items = access.read_content(pid)
+        if content_items:
+            result_parts.append("")
+            result_parts.append("Content:")
+            for item in content_items:
+                label_part = f' "{item["label"]}"' if item["label"] else ""
+                text = item["content"]
+                # Show first lines, indent for readability
+                lines = text.split("\n")
+                if len(lines) <= 5:
+                    preview = text
+                else:
+                    preview = "\n".join(lines[:5]) + f"\n... ({len(lines)} lines total)"
+                result_parts.append(f'  [{item["role"]}]{label_part}:')
+                for line in preview.split("\n"):
+                    result_parts.append(f"    {line}")
 
     # CDP web content — enrich when Chrome is active
     if app_info and _is_browser(app_info.get("name", "")):
