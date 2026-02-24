@@ -10,6 +10,7 @@ from nexus.sense.access import (
     find_elements, frontmost_app, describe_app,
     AXUIElementCreateApplication,
 )
+from nexus.state import emit
 
 
 def click_element(name, pid=None, role=None):
@@ -48,12 +49,15 @@ def click_element(name, pid=None, role=None):
 
     target = matches[0]
     ref = target.get("_ref")
+    label = target.get("label", name)
+    role = target.get("role", "?")
     if not ref:
         return {"ok": False, "error": "No element reference available"}
 
     # Try AXPress first (buttons, links)
     actions = ax_actions(ref)
     if "AXPress" in actions:
+        emit(f'Trying AXPress on [{role}] "{label}"...')
         success = ax_perform(ref, "AXPress")
         if success:
             return {
@@ -64,6 +68,7 @@ def click_element(name, pid=None, role=None):
 
     # Try AXConfirm
     if "AXConfirm" in actions:
+        emit(f'Trying AXConfirm on [{role}] "{label}"...')
         success = ax_perform(ref, "AXConfirm")
         if success:
             return {
@@ -74,6 +79,7 @@ def click_element(name, pid=None, role=None):
 
     # Try AXShowMenu (for menus)
     if "AXShowMenu" in actions:
+        emit(f'Trying AXShowMenu on [{role}] "{label}"...')
         success = ax_perform(ref, "AXShowMenu")
         if success:
             return {
@@ -89,6 +95,7 @@ def click_element(name, pid=None, role=None):
         from nexus.act.input import click as raw_click
         cx = pos[0] + size[0] // 2
         cy = pos[1] + size[1] // 2
+        emit(f"AX actions failed, clicking at ({cx},{cy})...")
         raw_click(cx, cy)
         return {
             "ok": True,

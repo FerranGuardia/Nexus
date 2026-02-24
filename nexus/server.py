@@ -67,10 +67,19 @@ def see(
     When Chrome is focused, `see` includes web page content via CDP.
     """
     from nexus.sense.fusion import see as _see, _resolve_pid
+    from nexus.state import start_action, end_action, emit
 
     # Resolve app name to PID at server level (avoids MCP parameter passing issues)
     pid = _resolve_pid(app) if app else None
+    desc = f"query={query}" if query else "full tree"
+    if screenshot:
+        desc += " +screenshot"
+    if menus:
+        desc += " +menus"
+    start_action("see", desc, app=app or "")
+    emit(f"Building perception for {app or 'frontmost'}...")
     result = _see(app=pid, query=query, screenshot=screenshot, menus=menus, diff=diff, content=content, observe=observe)
+    end_action("done")
 
     # If screenshot requested, return multimodal content
     if result.get("image"):
@@ -176,7 +185,15 @@ def do(action: str, app: str | None = None) -> str:
     When Chrome is focused, `see` includes web page content via CDP.
     """
     from nexus.act.resolve import do as _do
+    from nexus.state import read_state, write_state, read_and_clear_hint, start_action, end_action, emit
     import time
+
+    # --- Panel integration: check pause + read hints ---
+    state = read_state()
+    if state.get("paused"):
+        return "Paused by user via Nexus panel. Waiting to be resumed."
+
+    hint = read_and_clear_hint()
 
     # Resolve app name to PID
     pid = None
@@ -186,6 +203,9 @@ def do(action: str, app: str | None = None) -> str:
 
     # Detect which app should have focus after this action
     focus_app = _detect_focus_target(action, app)
+
+    # Broadcast current action to panel
+    start_action("do", action, app=app or "")
 
     # Determine if this action mutates the screen (skip verification for getters)
     lower = action.strip().lower()
@@ -197,6 +217,7 @@ def do(action: str, app: str | None = None) -> str:
     # Snapshot before (skip for read-only actions)
     before = None
     if not is_getter:
+        emit("Snapshotting before action...")
         from nexus.sense.fusion import snap
         try:
             before = snap(pid=pid)
@@ -229,6 +250,7 @@ def do(action: str, app: str | None = None) -> str:
     # Snapshot after + verify (brief pause lets UI update)
     changes = ""
     if before is not None and result.get("ok"):
+        emit("Verifying changes...")
         time.sleep(0.15)
         from nexus.sense.fusion import snap, verify
         try:
@@ -238,8 +260,15 @@ def do(action: str, app: str | None = None) -> str:
             changes = ""
 
     # Format as readable text
+    parts = []
+
+    # Prepend user hint if present
+    if hint:
+        parts.append(f"User note: {hint}")
+
     if result.get("ok"):
-        parts = [f"Done: {action}"]
+        end_action("done")
+        parts.append(f"Done: {action}")
         if result.get("element"):
             el = result["element"]
             parts.append(f'  Target: [{el.get("role", "?")}] "{el.get("label", "")}"')
@@ -265,13 +294,48 @@ def do(action: str, app: str | None = None) -> str:
             _schedule_focus_restore(focus_app)
         return "\n".join(parts)
     else:
-        parts = [f"Failed: {action}", f'  Error: {result.get("error", "unknown")}']
+        error_msg = result.get("error", "unknown")
+        end_action("failed", error=error_msg)
+        parts.append(f"Failed: {action}")
+        parts.append(f"  Error: {error_msg}")
         if result.get("suggestions"):
             parts.append(f"  Did you mean: {', '.join(result['suggestions'])}")
         if result.get("found_roles"):
             parts.append(f"  On screen: {', '.join(result['found_roles'])}")
         if result.get("available"):
             parts.append(f"  Available: {', '.join(result['available'][:10])}")
+
+        # Rich context snapshot on failure
+        try:
+            from nexus.sense.access import describe_app, focused_element, window_title, frontmost_app
+            target_pid = pid
+            if not target_pid:
+                info = frontmost_app()
+                if info:
+                    target_pid = info["pid"]
+            if target_pid:
+                parts.append("")
+                wt = window_title(target_pid)
+                if wt:
+                    parts.append(f"  Window: \"{wt}\"")
+                focused = focused_element(target_pid)
+                if focused:
+                    parts.append(f"  Focused: [{focused.get('role', '?')}] \"{focused.get('label', '')}\"")
+                elements = describe_app(target_pid)
+                if elements:
+                    summary = []
+                    for el in elements:
+                        label = el.get("label", "")
+                        if label:
+                            summary.append(f"[{el.get('role', '?')}] \"{label}\"")
+                        if len(summary) >= 8:
+                            break
+                    if summary:
+                        parts.append(f"  Visible ({len(elements)} elements): {', '.join(summary)}")
+                parts.append("  Tip: Use see() for full element tree, or see(query=\"...\") to search.")
+        except Exception:
+            pass  # Context must never break the error response
+
         return "\n".join(parts)
 
 

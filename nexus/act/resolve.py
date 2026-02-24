@@ -10,6 +10,7 @@ double/right/triple-click, modifier-click, hover, drag, type, press, scroll
 
 import re
 from nexus.act import native, input as raw_input
+from nexus.state import emit
 
 
 # ---------------------------------------------------------------------------
@@ -688,6 +689,7 @@ def do(action, pid=None):
 
     # Menu paths: "click File > Save" or "menu File > Save"
     if verb in ("click", "menu") and ">" in rest:
+        emit(f"Opening menu: {rest}")
         return native.click_menu(rest, pid=pid)
 
     if verb == "click":
@@ -784,6 +786,7 @@ def do(action, pid=None):
         return native.say(rest)
 
     if verb in ("navigate", "goto", "go"):
+        emit(f"Navigating to {rest}...")
         return _handle_navigate(rest)
 
     if verb in ("run", "eval", "execute") and rest.lower().startswith("js "):
@@ -816,6 +819,7 @@ def _run_chain(action, pid=None):
 
     results = []
     for i, step in enumerate(steps):
+        emit(f"Chain {i+1}/{len(steps)}: {step}")
         result = do(step, pid=pid)
         step_summary = {"step": i + 1, "action": step, "ok": result.get("ok", False)}
 
@@ -875,16 +879,20 @@ def _handle_click(target, double=False, right=False, triple=False, modifiers=Non
     # Check for ordinal reference: "the 2nd button", "3rd link", "last checkbox"
     ordinal = _parse_ordinal(target)
     if ordinal:
+        n, role, label = ordinal
+        emit(f"Resolving ordinal: {role} #{n}{'  ' + label if label else ''}...")
         return _click_nth(ordinal, double=double, right=right, triple=triple, modifiers=modifiers, pid=pid)
 
     # Check for container scoping: "delete in the row with Alice"
     container = _parse_container(target)
     if container:
+        emit(f"Searching in container row for '{container[0]}'...")
         return _click_in_container(container, double=double, right=right, triple=triple, modifiers=modifiers, pid=pid)
 
     # Check for spatial reference: "button near search", "field below Username"
     spatial = _parse_spatial(target)
     if spatial:
+        emit(f"Resolving spatial: '{spatial[0]}' {spatial[1]} '{spatial[2]}'...")
         return _click_spatial(spatial, double=double, right=right, triple=triple, modifiers=modifiers, pid=pid)
 
     # Parse optional role filter: "click button Save" or "click Save button"
@@ -919,6 +927,7 @@ def _handle_click(target, double=False, right=False, triple=False, modifiers=Non
                     "at": [cx, cy], "modifiers": modifiers}
         return {"ok": False, "error": f'Element "{target}" has no position'}
 
+    emit(f"Searching for '{target}'...")
     result = native.click_element(target, pid=pid, role=role)
 
     # If element not found, try learned label translation (e.g. "Save" → "guardar")
@@ -928,6 +937,7 @@ def _handle_click(target, double=False, right=False, triple=False, modifiers=Non
             app_name = _current_app_name(pid)
             mapped = lookup_label(target, app_name)
             if mapped and mapped.lower() != target.lower():
+                emit(f"Retrying with learned label: {target} -> {mapped}")
                 retry = native.click_element(mapped, pid=pid, role=role)
                 if retry.get("ok"):
                     retry["via_label"] = f"{target} -> {mapped}"
@@ -1183,6 +1193,7 @@ def _scroll_until(target, direction="down", max_scrolls=20, pid=None):
     scroll_amount = -clicks_per_scroll if direction == "down" else clicks_per_scroll
 
     for i in range(max_scrolls):
+        emit(f"Scroll until '{target}'... ({i+1}/{max_scrolls})")
         matches = find_elements(target, pid)
         if matches:
             el = matches[0]
@@ -1603,6 +1614,9 @@ def _poll_for(target, appear=True, timeout=10, interval=0.5, pid=None):
     polls = 0
 
     while time.time() < deadline:
+        elapsed = round(time.time() - (deadline - min(timeout, 30)), 1)
+        verb = "appear" if appear else "disappear"
+        emit(f"Waiting for '{target}' to {verb}... ({elapsed}s / {timeout}s)")
         matches = find_elements(target, pid)
         found = len(matches) > 0
         polls += 1
