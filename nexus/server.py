@@ -23,7 +23,11 @@ mcp = FastMCP(
         "or call APIs — use THOSE instead. Don't use Nexus to read web content when you can "
         "fetch the URL directly. Don't use `see` to read a file when you have a file reader. "
         "Use `do('get url')` to discover what's in the browser, then fetch it yourself. "
-        "Nexus is the physical layer — only use it for what you literally cannot do without it."
+        "Nexus is the physical layer — only use it for what you literally cannot do without it.\n\n"
+        "SKILLS: Nexus has CLI skills for common tasks (email, GitHub, etc.). "
+        "Before using see/do for a task, check the `nexus://skills` resource to see if "
+        "a faster CLI-based approach exists. Read a skill with `nexus://skills/{id}` "
+        "to get the exact commands. Skills are just knowledge — you run the CLI commands yourself."
     ),
 )
 
@@ -493,6 +497,43 @@ def _schedule_focus_restore(app_name, delay=0.4):
             pass
 
     threading.Thread(target=_restore, daemon=True).start()
+
+
+# ── Skill resources ──────────────────────────────────────────────
+
+
+@mcp.resource("nexus://skills")
+def skills_catalog() -> str:
+    """List all available skills — CLI shortcuts for common tasks.
+
+    Each skill teaches you which CLI tool to use instead of GUI automation.
+    Read a specific skill with nexus://skills/{id} for full documentation.
+    """
+    from nexus.mind.skills import list_skills
+
+    skills = list_skills()
+    if not skills:
+        return "No skills installed. Add .md files to ~/.nexus/skills/"
+
+    lines = ["Available skills:\n"]
+    for s in skills:
+        status = "ready" if s["available"] else f"needs: {', '.join(s['requires'])}"
+        lines.append(f"  {s['id']} — {s['description']} [{status}]")
+    lines.append(f"\nTotal: {len(skills)} skills. Read one: nexus://skills/{{id}}")
+    return "\n".join(lines)
+
+
+@mcp.resource("nexus://skills/{skill_id}")
+def skill_detail(skill_id: str) -> str:
+    """Read a specific skill's full documentation and CLI commands."""
+    from nexus.mind.skills import read_skill
+
+    content = read_skill(skill_id)
+    if content is None:
+        from nexus.mind.skills import list_skills
+        available = [s["id"] for s in list_skills()]
+        return f'Skill "{skill_id}" not found. Available: {", ".join(available)}'
+    return content
 
 
 def main():
