@@ -85,8 +85,9 @@ def paste_text(text):
     # Paste
     pyautogui.hotkey("command", "v")
 
-    # Brief pause for paste to register, then restore clipboard
-    time.sleep(0.1)
+    # Pause for paste to register before restoring clipboard.
+    # 0.3s needed for async fields (Mail.app IMAP/SMTP server addresses).
+    time.sleep(0.3)
     if old_clip is not None:
         try:
             subprocess.run(

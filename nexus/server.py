@@ -79,6 +79,9 @@ def see(
     except Exception:
         pass
 
+    # Normalize: FastMCP may pass "" instead of None for unspecified params
+    app = app.strip() if isinstance(app, str) and app.strip() else None
+
     # Resolve app name to PID at server level (avoids MCP parameter passing issues)
     pid = _resolve_pid(app) if app else None
     desc = f"query={query}" if query else "full tree"
@@ -212,6 +215,9 @@ def do(action: str, app: str | None = None) -> str:
         return "Paused by user via Nexus panel. Waiting to be resumed."
 
     hint = read_and_clear_hint()
+
+    # Normalize: FastMCP may pass "" instead of None for unspecified params
+    app = app.strip() if isinstance(app, str) and app.strip() else None
 
     # Resolve app name to PID
     pid = None

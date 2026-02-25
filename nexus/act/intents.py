@@ -24,7 +24,19 @@ def _handle_type(rest, pid=None):
         return native.set_value(target, text, pid=pid)
 
     # Simple type: "type hello world"
+    # Try AX set_value on focused element first (proper focus + value setting),
+    # then fall back to raw input (pyautogui / clipboard paste).
     text = _strip_quotes(rest)
+    try:
+        from nexus.sense.access import focused_element, ax_set
+        focused = focused_element(pid=pid)
+        if focused and focused.get("_ref"):
+            ref = focused["_ref"]
+            ax_set(ref, "AXFocused", True)
+            if ax_set(ref, "AXValue", text):
+                return {"ok": True, "action": "set_value", "text": text}
+    except Exception:
+        pass
     raw_input.type_text(text)
     return {"ok": True, "action": "type", "text": text}
 

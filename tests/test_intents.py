@@ -217,52 +217,50 @@ class TestHandleDrag:
 # ===========================================================================
 
 
+@patch("nexus.sense.access.focused_element", return_value=None)
 @patch("nexus.act.intents.raw_input")
 @patch("nexus.act.intents.native")
 class TestHandleType:
     """Tests for _handle_type — type text, optionally into a target field."""
 
-    def test_type_simple_text(self, mock_native, mock_raw_input):
+    def test_type_simple_text(self, mock_native, mock_raw_input, mock_focused):
         result = _handle_type("hello")
         mock_raw_input.type_text.assert_called_once_with("hello")
         assert result["ok"] is True
         assert result["text"] == "hello"
 
-    def test_type_quoted_text(self, mock_native, mock_raw_input):
+    def test_type_quoted_text(self, mock_native, mock_raw_input, mock_focused):
         result = _handle_type('"hello world"')
         mock_raw_input.type_text.assert_called_once_with("hello world")
         assert result["text"] == "hello world"
 
-    def test_type_single_quoted(self, mock_native, mock_raw_input):
+    def test_type_single_quoted(self, mock_native, mock_raw_input, mock_focused):
         result = _handle_type("'hello world'")
         mock_raw_input.type_text.assert_called_once_with("hello world")
         assert result["text"] == "hello world"
 
-    def test_type_in_target(self, mock_native, mock_raw_input):
+    def test_type_in_target(self, mock_native, mock_raw_input, mock_focused):
         mock_native.set_value.return_value = {"ok": True}
         _handle_type("hello in search")
         mock_native.set_value.assert_called_once_with("search", "hello", pid=None)
 
-    def test_type_quoted_in_target(self, mock_native, mock_raw_input):
+    def test_type_quoted_in_target(self, mock_native, mock_raw_input, mock_focused):
         mock_native.set_value.return_value = {"ok": True}
         _handle_type('"hello world" in search')
         mock_native.set_value.assert_called_once_with("search", "hello world", pid=None)
 
-    def test_type_in_target_with_pid(self, mock_native, mock_raw_input):
+    def test_type_in_target_with_pid(self, mock_native, mock_raw_input, mock_focused):
         mock_native.set_value.return_value = {"ok": True}
         _handle_type("hello in search", pid=555)
         mock_native.set_value.assert_called_once_with("search", "hello", pid=555)
 
-    def test_type_empty_returns_error(self, mock_native, mock_raw_input):
+    def test_type_empty_returns_error(self, mock_native, mock_raw_input, mock_focused):
         result = _handle_type("")
         assert result["ok"] is False
         assert "Nothing to type" in result["error"]
 
-    def test_type_multiword(self, mock_native, mock_raw_input):
+    def test_type_multiword(self, mock_native, mock_raw_input, mock_focused):
         result = _handle_type("hello world")
-        # "hello world" contains "in" nowhere, so it's treated as simple type
-        # Actually wait — let's check if the regex matches "hello world" with "in"
-        # re.match(r"(.+?)\s+in\s+(.+)$", "hello world") — no "in" so no match
         mock_raw_input.type_text.assert_called_once_with("hello world")
 
 

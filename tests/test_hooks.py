@@ -993,3 +993,153 @@ class TestPasteText:
         """Exactly 8 chars uses write, 9 chars uses paste."""
         from nexus.act.input import _PASTE_THRESHOLD
         assert _PASTE_THRESHOLD == 8
+
+    @patch("nexus.act.input.pyautogui")
+    @patch("nexus.act.input.subprocess")
+    @patch("nexus.act.input.time")
+    def test_paste_waits_before_clipboard_restore(self, mock_time, mock_sub, mock_pag):
+        """paste_text waits 0.3s for paste to register before restoring clipboard."""
+        from nexus.act.input import paste_text
+
+        mock_sub.run.return_value = MagicMock(stdout=b"old")
+        paste_text("smtp.serviciodecorreo.es")
+        mock_time.sleep.assert_called_once_with(0.3)
+
+
+# ===========================================================================
+# 7a: Phase 7a — Field Test Blocker Fixes
+# ===========================================================================
+
+class TestAppParamNormalization:
+    """Fix 1: FastMCP passes '' instead of None for unspecified app param."""
+
+    def test_empty_string_normalized_to_none(self):
+        """Empty string app param should be treated as None."""
+        # Simulate the normalization logic from server.py
+        app = ""
+        app = app.strip() if isinstance(app, str) and app.strip() else None
+        assert app is None
+
+    def test_whitespace_normalized_to_none(self):
+        """Whitespace-only app param should be treated as None."""
+        app = "   "
+        app = app.strip() if isinstance(app, str) and app.strip() else None
+        assert app is None
+
+    def test_valid_app_name_preserved(self):
+        """Valid app name should be preserved after normalization."""
+        app = "Mail"
+        app = app.strip() if isinstance(app, str) and app.strip() else None
+        assert app == "Mail"
+
+    def test_none_stays_none(self):
+        """None app param stays None."""
+        app = None
+        app = app.strip() if isinstance(app, str) and app.strip() else None
+        assert app is None
+
+    def test_numeric_pid_string_preserved(self):
+        """Numeric PID as string should be preserved."""
+        app = "14575"
+        app = app.strip() if isinstance(app, str) and app.strip() else None
+        assert app == "14575"
+
+    def test_app_name_with_spaces_trimmed(self):
+        """App name with leading/trailing spaces should be trimmed."""
+        app = "  Docker Desktop  "
+        app = app.strip() if isinstance(app, str) and app.strip() else None
+        assert app == "Docker Desktop"
+
+
+class TestSimpleTypeFocusedElement:
+    """Fix 3: Simple 'type X' tries AX set_value on focused element."""
+
+    @patch("nexus.act.intents.raw_input")
+    @patch("nexus.act.intents.native")
+    def test_simple_type_falls_back_to_raw_input(self, mock_native, mock_raw):
+        """When no focused element, falls back to raw_input.type_text."""
+        from nexus.act.intents import _handle_type
+
+        # Mock focused_element to return None (no focused element)
+        with patch("nexus.sense.access.focused_element", return_value=None):
+            result = _handle_type("hello world")
+
+        mock_raw.type_text.assert_called_once_with("hello world")
+        assert result["action"] == "type"
+
+    @patch("nexus.act.intents.raw_input")
+    @patch("nexus.act.intents.native")
+    def test_simple_type_uses_ax_when_focused(self, mock_native, mock_raw):
+        """When focused element exists and AXValue works, uses AX path."""
+        from nexus.act.intents import _handle_type
+
+        mock_ref = MagicMock()
+        focused = {"_ref": mock_ref, "role": "text field", "label": "Server"}
+
+        with patch("nexus.sense.access.focused_element", return_value=focused), \
+             patch("nexus.sense.access.ax_set", return_value=True) as mock_ax:
+            result = _handle_type("smtp.server.com")
+
+        # Should have called ax_set for focus and value
+        assert mock_ax.call_count == 2
+        mock_ax.assert_any_call(mock_ref, "AXFocused", True)
+        mock_ax.assert_any_call(mock_ref, "AXValue", "smtp.server.com")
+        assert result["action"] == "set_value"
+        # Should NOT have called raw_input
+        mock_raw.type_text.assert_not_called()
+
+    @patch("nexus.act.intents.raw_input")
+    @patch("nexus.act.intents.native")
+    def test_simple_type_falls_back_when_ax_value_fails(self, mock_native, mock_raw):
+        """When AXValue set fails, falls back to raw_input."""
+        from nexus.act.intents import _handle_type
+
+        mock_ref = MagicMock()
+        focused = {"_ref": mock_ref, "role": "text field", "label": "URL"}
+
+        def ax_set_side_effect(ref, attr, val):
+            if attr == "AXFocused":
+                return True
+            return False  # AXValue fails
+
+        with patch("nexus.sense.access.focused_element", return_value=focused), \
+             patch("nexus.sense.access.ax_set", side_effect=ax_set_side_effect):
+            result = _handle_type("long-server-address.com")
+
+        mock_raw.type_text.assert_called_once_with("long-server-address.com")
+        assert result["action"] == "type"
+
+    @patch("nexus.act.intents.raw_input")
+    @patch("nexus.act.intents.native")
+    def test_simple_type_falls_back_on_exception(self, mock_native, mock_raw):
+        """Any exception in AX path falls back gracefully to raw_input."""
+        from nexus.act.intents import _handle_type
+
+        with patch("nexus.sense.access.focused_element", side_effect=RuntimeError("AX fail")):
+            result = _handle_type("test text")
+
+        mock_raw.type_text.assert_called_once_with("test text")
+        assert result["action"] == "type"
+
+    @patch("nexus.act.intents.raw_input")
+    @patch("nexus.act.intents.native")
+    def test_simple_type_falls_back_when_no_ref(self, mock_native, mock_raw):
+        """When focused element has no _ref, falls back to raw_input."""
+        from nexus.act.intents import _handle_type
+
+        focused = {"role": "text field", "label": "Name"}  # no _ref
+
+        with patch("nexus.sense.access.focused_element", return_value=focused):
+            result = _handle_type("hello")
+
+        mock_raw.type_text.assert_called_once_with("hello")
+
+    @patch("nexus.act.intents.raw_input")
+    @patch("nexus.act.intents.native")
+    def test_type_in_target_still_uses_native(self, mock_native, mock_raw):
+        """'type X in Y' still uses native.set_value (not affected by fix)."""
+        from nexus.act.intents import _handle_type
+
+        mock_native.set_value.return_value = {"ok": True, "action": "set_value"}
+        result = _handle_type("hello in search")
+        mock_native.set_value.assert_called_once_with("search", "hello", pid=None)
