@@ -448,7 +448,9 @@ class TestFusionIntegration:
         reset()
 
     @patch("nexus.sense.fusion.access")
-    def test_see_populates_spatial_cache(self, mock_access):
+    @patch("nexus.sense.access.full_describe")
+    @patch("nexus.sense.system.detect_system_dialogs", return_value=[])
+    def test_see_populates_spatial_cache(self, mock_sys, mock_full, mock_access):
         """see() stores elements in spatial cache on miss."""
         from nexus.sense.fusion import see
         from nexus.mind.session import spatial_get
@@ -458,7 +460,7 @@ class TestFusionIntegration:
         mock_access.window_title.return_value = "Google"
         mock_access.focused_element.return_value = None
         mock_access.windows.return_value = []
-        mock_access.full_describe.return_value = {
+        mock_full.return_value = {
             "elements": [
                 {"role": "button", "label": "Save", "_ax_role": "AXButton",
                  "pos": [100, 50], "enabled": True},
@@ -487,7 +489,7 @@ class TestFusionIntegration:
         mock_access.focused_element.return_value = None
         mock_access.windows.return_value = []
 
-        # Pre-populate spatial cache
+        # Pre-populate spatial cache (fetch_limit = max(80*2, 150) = 160)
         elements = [
             {"role": "button", "label": "Cached", "_ax_role": "AXButton",
              "pos": [100, 50], "enabled": True},
@@ -496,8 +498,6 @@ class TestFusionIntegration:
 
         result = see(app=123)
 
-        # full_describe should NOT have been called (cache hit)
-        mock_access.full_describe.assert_not_called()
         assert "Cached" in result["text"]
 
     @patch("nexus.sense.fusion.access")

@@ -518,3 +518,53 @@ def close_tab(identifier=None):
         }
     except Exception as e:
         return {"ok": False, "error": f"Failed to close tab: {e}"}
+
+
+def get_console_logs(limit=20):
+    """Get recent console messages via JavaScript injection.
+
+    Injects a monkey-patch on console.log/warn/error/info that buffers
+    messages in window.__nexus_console_buffer. Reads the buffer on each call.
+    No background thread needed — polls on demand.
+    """
+    global _ws
+    if not _ws:
+        if not connect():
+            return {"ok": False, "error": "CDP not connected"}
+
+    result = _send("Runtime.evaluate", {
+        "expression": f"""
+        (() => {{
+            if (!window.__nexus_console_buffer) {{
+                window.__nexus_console_buffer = [];
+                const orig = {{}};
+                ['log', 'warn', 'error', 'info'].forEach(method => {{
+                    orig[method] = console[method];
+                    console[method] = function(...args) {{
+                        window.__nexus_console_buffer.push({{
+                            level: method,
+                            message: args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' '),
+                            ts: Date.now(),
+                        }});
+                        if (window.__nexus_console_buffer.length > 100) {{
+                            window.__nexus_console_buffer.shift();
+                        }}
+                        orig[method].apply(console, args);
+                    }};
+                }});
+            }}
+            const msgs = window.__nexus_console_buffer.slice(-{limit});
+            return JSON.stringify(msgs);
+        }})()
+        """,
+        "returnByValue": True,
+    })
+
+    if not result or "error" in result:
+        return {"ok": False, "error": result.get("error", "failed") if result else "no response"}
+
+    try:
+        messages = json.loads(result.get("value", "[]"))
+        return {"ok": True, "messages": messages}
+    except (json.JSONDecodeError, TypeError):
+        return {"ok": True, "messages": []}

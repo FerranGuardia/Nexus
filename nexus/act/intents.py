@@ -665,3 +665,30 @@ def _handle_close_tab(rest):
         return close_tab(identifier)
     except Exception as e:
         return {"ok": False, "error": f"Close tab failed: {e}"}
+
+
+def _handle_get_console(rest=""):
+    """Handle: get console, console logs — retrieve browser console messages."""
+    try:
+        from nexus.sense.web import ensure_cdp, get_console_logs
+        cdp = ensure_cdp()
+        if not cdp["available"]:
+            return {"ok": False, "error": cdp.get("message", "CDP not available")}
+
+        limit = 20
+        if rest.strip().isdigit():
+            limit = int(rest.strip())
+        result = get_console_logs(limit=limit)
+        if not result.get("ok"):
+            return result
+        messages = result.get("messages", [])
+        if not messages:
+            return {"ok": True, "text": "No console messages captured yet. Messages will appear after console.log/warn/error calls."}
+        lines = []
+        for msg in messages:
+            level = msg.get("level", "log").upper()
+            text = msg.get("message", "")[:200]
+            lines.append(f"  [{level}] {text}")
+        return {"ok": True, "text": f"Console ({len(messages)} messages):\n" + "\n".join(lines)}
+    except Exception as e:
+        return {"ok": False, "error": f"Console capture failed: {e}"}

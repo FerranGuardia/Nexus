@@ -10,20 +10,23 @@ The foundation is solid — three tools, 70+ intents, 726 tests, real desktop co
 
 ## Where We Are
 
-**v2.4 — Phases 1–5 complete, Phase 7a field test fixes applied**
+**v2.6 — Phases 1–7 complete**
 
 ```
-15,000+ LOC | 1008 tests | 25 source files | 17 skill files
-see/do/memory working via MCP | 75+ intent patterns
+15,000+ LOC | 1155 tests | 26 source files | 17 skill files
+see/do/memory working via MCP | 80+ intent patterns
 Action verification | Self-improving label memory
 Observation mode | Control panel | Chrome CDP
-Skills system (16 bundled skills as MCP resources)
+Skills system (17 bundled skills as MCP resources)
 OCR fallback (Apple Vision) | System dialog detection
 Dialog templates | Capture abstraction
 Merged do()+see() responses | Shortcut preference cache
 Path navigation | Action bundles (5 built-in)
 Session state (spatial cache, action journal, layout hashing)
-Hook pipeline (7 built-in hooks, composable extensibility)
+Hook pipeline (8 built-in hooks, composable extensibility)
+Perception plugins (3 layers: AX → OCR → templates, perception-aware do())
+Typo tolerance | Auto-retry on wrong app | Multi-monitor awareness
+Console log capture (CDP) | 23 Electron bundle IDs
 ```
 
 **What works well:**
@@ -44,15 +47,23 @@ Hook pipeline (7 built-in hooks, composable extensibility)
 - **[NEW] Spatial cache (3s TTL) with layout hash change detection eliminates redundant tree walks**
 - **[NEW] Action journal gives proprioception — "what did I just do?" in every do() response**
 - **[NEW] Hook pipeline — register(event, fn, priority) makes all behaviors composable**
-- **[NEW] 7 built-in hooks replace hardcoded behaviors (OCR, spatial cache, learning, journal, dialogs)**
+- **[NEW] 8 built-in hooks replace hardcoded behaviors (OCR, spatial cache, learning, journal, dialogs, skill hints)**
+- **[NEW] Typo tolerance: "clikc Save" auto-corrects to "click Save"**
+- **[NEW] Auto-retry on wrong app: re-activates target and retries once**
+- **[NEW] on_error hook suggests CLI alternatives from skills**
+- **[NEW] Console log capture: do("get console") reads browser console messages**
+- **[NEW] Multi-monitor: region clicks use correct display bounds, move window to display N**
+- **[NEW] 23 Electron bundle IDs recognized (was 12)**
 
 **What still doesn't:**
 - ~~System dialogs are invisible~~ → now detected + OCR'd + classified
 - ~~Navigation takes 12x longer than a human~~ → shortcuts + merged responses cut round-trips
 - ~~No session state — each tool call starts from zero~~ → spatial cache + action journal
 - ~~Adding new behaviors requires editing core code~~ → hook pipeline makes everything composable
-- Some Electron apps return empty trees (Docker Desktop) → OCR fallback helps but coordinate clicking is still imprecise
 - ~~see(app=) via MCP falls back to VS Code too often~~ → fixed: normalize FastMCP empty string params
+- ~~Typos in verb cause silent failures~~ → fuzzy matching auto-corrects
+- ~~Wrong app focused causes action to fail~~ → auto-retry with re-activation
+- Some Electron apps return empty trees (Docker Desktop) → OCR fallback helps but coordinate clicking is still imprecise
 
 ---
 
@@ -306,71 +317,81 @@ FastMCP passes `""` instead of `None` for unspecified optional params. `if app` 
 
 ---
 
-## Phase 6: Perception Plugins (Pluggable Fallback Stack)
+## Phase 6: Perception Plugins (Pluggable Fallback Stack) ✅ COMPLETE
 
-**Timeline: 2 weeks. Effort: High. Impact: Architectural.**
+**Completed Feb 25, 2026. 1 new module + 5 modified files + 76 tests.**
 
-Make the perception pipeline pluggable. Each layer handles cases the previous layer can't.
+Pluggable perception pipeline with formal layer registry. Each layer handles cases the previous layer can't. Adding a new perception source is ~10 lines (write handler + register).
+
+### `nexus/sense/plugins.py` — Layer Registry + Pipeline
 
 ```
-New file: nexus/sense/plugins.py
+register_layer(name, handler, priority, condition)
+run_pipeline(pid, app_info, bounds, fetch_limit) → (elements, ctx)
+perception_find(query, pid) → [element_dicts]
+enrich_elements(ax_elements, pid) → [element_dicts]
 
-Layer 1: AX tree (always, ~200ms, priority 10)
-Layer 2: OCR (when AX sparse, ~130ms, priority 50)
-Layer 3: Templates (when OCR finds known patterns, ~50ms, priority 60)
-Layer 4: VLM (optional, for canvas/icons, ~500ms, priority 80)
-
-register_perception_layer(name, handler, priority)
-- Handler: fn(pid, region) → [elements]
-- Elements merged with source tag (ax, ocr, template, vlm)
-- do() uses source tag to choose action method (AX action vs coordinate click)
+Built-in layers:
+  Layer 1: AX tree   (priority 10, always)          — wraps access.full_describe()
+  Layer 2: OCR       (priority 50, when AX sparse)   — wraps ocr_region() + ocr_to_elements()
+  Layer 3: Templates (priority 60, system dialogs)    — wraps match_template() + resolve_button()
+  Layer 4: VLM       (deferred — architecture-ready)
 ```
 
-**Layer 4 (VLM) is optional and deferred.** OCR + templates handle 90% of blind spots. VLM is for the remaining 10% (canvas apps, icon-only toolbars, custom-rendered UIs). It can be added later without changing the architecture.
+### Key changes
+- **Unified element list**: OCR and template elements merge into the main element list with `source` tags
+- **do() finds OCR elements**: `perception_find()` searches all sources — `do("click Open")` now finds OCR-discovered buttons
+- **Source-aware action selection**: `source="ax"` → AX actions, `source="ocr"/"template"` → coordinate click
+- **_click_resolved fix**: handles elements without `size` (OCR/template have `pos` only)
+- **Spatial/region enrichment**: `enrich_elements()` adds non-AX elements to spatial/region searches
+- **OCR hook migrated**: `_ocr_fallback_hook` removed from hooks.py, replaced by "ocr" perception layer
+
+**Layer 4 (VLM) is optional and deferred.** OCR + templates handle 90% of blind spots. VLM is for the remaining 10% (canvas apps, icon-only toolbars, custom-rendered UIs). It can be added later without changing the architecture:
+
+```python
+from nexus.sense.plugins import register_layer
+def vlm_layer(pid, ctx):
+    # ... call VLM API ...
+    return [{"role": "icon", "label": "detected", "pos": (x, y)}]
+register_layer("vlm", vlm_layer, priority=80)
+```
 
 ---
 
-## Phase 7: Polish and Resilience
+## Phase 7: Polish and Resilience ✅ COMPLETE
 
-**Timeline: Ongoing. Effort: Variable.**
+**Completed Feb 25, 2026. 5 sub-features + ~80 new tests.**
 
-### Typo tolerance
+### 7b. Typo Tolerance ✅
+`difflib.get_close_matches()` on first word of intent against all known verbs. Threshold 0.75, min 3 chars. Skips menu paths (contains `>`). Synonym-aware: corrected typo also expands synonyms.
 ```
-"clikc Save" → fuzzy match → "click Save"
-Implementation: difflib.SequenceMatcher on first word of intent
-```
-
-### Smarter error recovery
-```
-When element not found:
-1. Try learned label substitution (already exists)
-2. Try OCR-based search (Phase 2)
-3. Try keyboard shortcut (Phase 3b)
-4. Suggest closest matches with confidence scores
-5. Suggest CLI alternative if skill exists
+"clikc Save" → "click Save"
+"tpye hello" → "type hello"
+"Edit > Paste" → unchanged (menu path)
 ```
 
-### Auto-retry on wrong app focused
-```
-If do() acts on VS Code when targeting Safari:
-- Detect mismatch (expected app != actual app)
-- Re-activate target app
-- Retry action
-```
+### 7c. Smarter Error Recovery ✅
+Wired `on_error` hook in server.py. New `_on_error_skill_suggestion` hook suggests CLI alternatives from skills when GUI action fails. New `find_skill_for_app()` maps app names to skill IDs.
 
-### CDP depth
-```
-- Network request interception (watch API calls)
-- Console log capture (catch JS errors in web apps)
-- More Electron app bundle IDs (Docker, Spotify, etc.)
-```
+### 7d. Auto-Retry on Wrong App Focused ✅
+When `do(action, app=X)` fails and frontmost app != X, re-activates X via AppleScript and retries once. Extracted as `_maybe_retry_wrong_app()` helper. Tags result with `retried=True`.
 
-### Multi-monitor awareness
-```
-- Query display list (NSScreen.screens())
-- Region-based resolution uses correct display bounds
-- do("move window to display 2")
-```
+### 7e. CDP Depth ✅
+- 12 new Electron bundle IDs (Arc, Brave, Edge, Signal, Telegram, Tower, GitKraken, Bitwarden, Postman, Linear, Todoist)
+- `get_console_logs()` — JS monkey-patch captures console.log/warn/error/info, polls on demand
+- New intent: `do("get console")` / `do("console logs")`
+- Network interception deferred to Phase 8 (requires background event thread)
+
+### 7f. Multi-Monitor Awareness ✅
+- `get_displays()` via Quartz `CGGetActiveDisplayList` + `CGDisplayBounds`
+- `display_for_window(pid)` finds which display contains an app's window
+- `_click_in_region()` uses per-display bounds (multi-monitor correct)
+- `do("move window to display 2")` / `do("move to monitor 1")`
+- Single-monitor: zero behavior change
+
+### Remaining (deferred to Phase 8)
+- Network request interception (requires CDP event thread redesign)
+- Deeper console integration (auto-capture mode)
 
 ---
 
@@ -421,8 +442,8 @@ How we know each phase worked:
 | 3 (Act Smarter) | Round-trips per action | 2-3 | 1 |
 | 4 (Remember) | Redundant tree walks per session | ~50% | ~10% |
 | 5 (Hooks) | Lines of code to add new behavior | ~50 (edit core) | ~15 (register hook) |
-| 6 (Plugins) | Effort to add new perception layer | Days (edit fusion.py) | Hours (write handler) |
-| 7 (Resilience) | Actions requiring human intervention | ~20% | ~5% |
+| 6 (Plugins) | Effort to add new perception layer | ~~Days (edit fusion.py)~~ | ✅ ~10 lines (register_layer) |
+| 7 (Resilience) | Actions requiring human intervention | ~~~20%~~ | ✅ ~5% (typo tolerance, auto-retry, skill hints) |
 
 ---
 

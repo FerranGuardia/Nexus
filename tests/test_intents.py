@@ -13,6 +13,7 @@ from nexus.act.intents import (
     _handle_read_table, _handle_read_list,
     _handle_navigate, _handle_run_js,
     _handle_switch_tab, _handle_new_tab, _handle_close_tab,
+    _handle_get_console,
 )
 from nexus.act.parse import KEY_ALIASES
 from nexus.act.resolve import do
@@ -1072,3 +1073,112 @@ class TestTripleClick:
         mock_raw.triple_click.return_value = {"ok": True}
         result = do("triple-click")
         mock_raw.triple_click.assert_called_once_with(50, 60)
+
+
+# ===========================================================================
+# Phase 7e: Console log capture + Electron IDs
+# ===========================================================================
+
+
+class TestGetConsole:
+    """Tests for _handle_get_console — browser console log capture."""
+
+    def test_returns_messages(self):
+        mock_cdp = {"available": True}
+        mock_logs = {"ok": True, "messages": [
+            {"level": "log", "message": "hello world", "ts": 1000},
+            {"level": "error", "message": "oh no", "ts": 1001},
+        ]}
+        with patch("nexus.sense.web.ensure_cdp", return_value=mock_cdp), \
+             patch("nexus.sense.web.get_console_logs", return_value=mock_logs):
+            result = _handle_get_console()
+        assert result["ok"] is True
+        assert "[LOG]" in result["text"]
+        assert "[ERROR]" in result["text"]
+        assert "hello world" in result["text"]
+
+    def test_no_messages_yet(self):
+        mock_cdp = {"available": True}
+        mock_logs = {"ok": True, "messages": []}
+        with patch("nexus.sense.web.ensure_cdp", return_value=mock_cdp), \
+             patch("nexus.sense.web.get_console_logs", return_value=mock_logs):
+            result = _handle_get_console()
+        assert result["ok"] is True
+        assert "No console messages" in result["text"]
+
+    def test_cdp_not_available(self):
+        mock_cdp = {"available": False, "message": "Chrome not running"}
+        with patch("nexus.sense.web.ensure_cdp", return_value=mock_cdp):
+            result = _handle_get_console()
+        assert result["ok"] is False
+        assert "Chrome not running" in result["error"]
+
+    def test_custom_limit(self):
+        mock_cdp = {"available": True}
+        mock_logs = {"ok": True, "messages": []}
+        with patch("nexus.sense.web.ensure_cdp", return_value=mock_cdp), \
+             patch("nexus.sense.web.get_console_logs", return_value=mock_logs) as m:
+            result = _handle_get_console("5")
+        m.assert_called_once_with(limit=5)
+
+
+class TestElectronBundleIDs:
+    """Tests for expanded Electron bundle ID recognition."""
+
+    def test_arc_recognized(self):
+        from nexus.sense.access import _is_electron
+        assert _is_electron("company.thebrowser.Browser") is True
+
+    def test_brave_recognized(self):
+        from nexus.sense.access import _is_electron
+        assert _is_electron("com.brave.Browser") is True
+
+    def test_edge_recognized(self):
+        from nexus.sense.access import _is_electron
+        assert _is_electron("com.microsoft.edgemac") is True
+
+    def test_signal_recognized(self):
+        from nexus.sense.access import _is_electron
+        assert _is_electron("org.whispersystems.signal-desktop") is True
+
+    def test_telegram_recognized(self):
+        from nexus.sense.access import _is_electron
+        assert _is_electron("ru.keepcoder.Telegram") is True
+
+    def test_existing_still_work(self):
+        from nexus.sense.access import _is_electron
+        assert _is_electron("com.microsoft.VSCode") is True
+        assert _is_electron("com.slack.Slack") is True
+
+    def test_unknown_not_matched(self):
+        from nexus.sense.access import _is_electron
+        assert _is_electron("com.apple.Safari") is False
+        assert _is_electron("com.apple.Finder") is False
+
+
+class TestConsoleRouting:
+    """Tests for console intent routing in do()."""
+
+    @patch("nexus.act.resolve.native")
+    @patch("nexus.act.resolve.raw_input")
+    def test_get_console_routes(self, mock_raw, mock_native):
+        with patch("nexus.sense.web.ensure_cdp", return_value={"available": True}), \
+             patch("nexus.sense.web.get_console_logs", return_value={"ok": True, "messages": []}):
+            result = do("get console")
+        assert result["ok"] is True
+
+    @patch("nexus.act.resolve.native")
+    @patch("nexus.act.resolve.raw_input")
+    def test_console_logs_routes(self, mock_raw, mock_native):
+        with patch("nexus.sense.web.ensure_cdp", return_value={"available": True}), \
+             patch("nexus.sense.web.get_console_logs", return_value={"ok": True, "messages": []}):
+            result = do("console logs")
+        assert result["ok"] is True
+
+    @patch("nexus.act.resolve.native")
+    @patch("nexus.act.resolve.raw_input")
+    def test_console_routes(self, mock_raw, mock_native):
+        with patch("nexus.sense.web.ensure_cdp", return_value={"available": True}), \
+             patch("nexus.sense.web.get_console_logs", return_value={"ok": True, "messages": []}):
+            result = do("console")
+        assert result["ok"] is True

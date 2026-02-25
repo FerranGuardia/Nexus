@@ -1,7 +1,7 @@
 """Self-improving action memory — learns from every do() invocation.
 
 Tracks label translations, action history, and method success rates.
-Stored at ~/.nexus/learned.json, separate from the user memory store.
+Stored in SQLite via db.py (~/.nexus/nexus.db).
 
 Label learning works by correlating failed and successful actions:
 when do("click Save") fails and do("click Guardar") succeeds in the
@@ -10,75 +10,14 @@ stores the mapping. Next time, do("click Save") succeeds on the
 first try via automatic label substitution.
 """
 
-import json
 import time as _time
-from pathlib import Path
 from datetime import datetime
-
-# ---------------------------------------------------------------------------
-# Storage paths — module-level for test patching (same pattern as store.py)
-# ---------------------------------------------------------------------------
-
-LEARN_DIR = Path.home() / ".nexus"
-LEARN_FILE = LEARN_DIR / "learned.json"
 
 MAX_ACTIONS = 500          # FIFO ring buffer cap
 CORRELATION_WINDOW = 30    # seconds: max gap between fail→succeed to correlate
 
-# Module-level state — loaded once, written on mutation
-_store = None
-_dirty = False
-
 # Session-level: recent failures awaiting correlation (in-memory only)
 _pending_failures = []  # list of {app, verb, target, ts}
-
-
-# ---------------------------------------------------------------------------
-# Storage
-# ---------------------------------------------------------------------------
-
-def _ensure_loaded():
-    """Load the store from disk if not already loaded."""
-    global _store
-    if _store is not None:
-        return
-    _store = _load_from_disk()
-
-
-def _load_from_disk():
-    """Read learned.json, return default structure if missing/corrupt."""
-    if not LEARN_FILE.exists():
-        return _empty_store()
-    try:
-        data = json.loads(LEARN_FILE.read_text())
-        if not isinstance(data, dict):
-            return _empty_store()
-        data.setdefault("labels", {})
-        data.setdefault("actions", [])
-        data.setdefault("methods", {})
-        data.setdefault("version", 1)
-        return data
-    except (json.JSONDecodeError, IOError):
-        return _empty_store()
-
-
-def _empty_store():
-    return {"version": 1, "labels": {}, "actions": [], "methods": {}}
-
-
-def _save():
-    """Write the store to disk if dirty."""
-    global _dirty
-    if not _dirty or _store is None:
-        return
-    LEARN_DIR.mkdir(parents=True, exist_ok=True)
-    LEARN_FILE.write_text(json.dumps(_store, indent=2, ensure_ascii=False))
-    _dirty = False
-
-
-def _mark_dirty():
-    global _dirty
-    _dirty = True
 
 
 # ---------------------------------------------------------------------------
@@ -91,20 +30,19 @@ def lookup_label(target, app_name=None):
     Checks app-specific mapping first, then _global fallback.
     Returns the mapped label string or None.
     """
-    _ensure_loaded()
+    from nexus.mind.db import label_get
     target_lower = target.lower()
-    labels = _store["labels"]
 
     # App-specific first
     if app_name:
-        app_labels = labels.get(app_name.lower(), {})
-        if target_lower in app_labels:
-            return app_labels[target_lower]["mapped"]
+        entry = label_get(app_name.lower(), target_lower)
+        if entry:
+            return entry["mapped"]
 
     # Global fallback
-    global_labels = labels.get("_global", {})
-    if target_lower in global_labels:
-        return global_labels[target_lower]["mapped"]
+    entry = label_get("_global", target_lower)
+    if entry:
+        return entry["mapped"]
 
     return None
 
@@ -115,7 +53,7 @@ def record_label(target, mapped, app_name=None):
     Records both app-specific and _global mappings.
     Increments hit count on repeated observations.
     """
-    _ensure_loaded()
+    from nexus.mind.db import label_upsert
     target_lower = target.lower()
     mapped_lower = mapped.lower()
 
@@ -123,37 +61,12 @@ def record_label(target, mapped, app_name=None):
     if target_lower == mapped_lower:
         return
 
-    now = datetime.now().isoformat()
-    labels = _store["labels"]
-
     # App-specific
     if app_name:
-        app_key = app_name.lower()
-        if app_key not in labels:
-            labels[app_key] = {}
-        entry = labels[app_key].get(target_lower)
-        if entry and entry["mapped"] == mapped_lower:
-            entry["hits"] += 1
-            entry["updated"] = now
-        else:
-            labels[app_key][target_lower] = {
-                "mapped": mapped_lower, "hits": 1, "updated": now,
-            }
+        label_upsert(app_name.lower(), target_lower, mapped_lower)
 
     # Global (aggregated across apps)
-    if "_global" not in labels:
-        labels["_global"] = {}
-    g_entry = labels["_global"].get(target_lower)
-    if g_entry and g_entry["mapped"] == mapped_lower:
-        g_entry["hits"] += 1
-        g_entry["updated"] = now
-    else:
-        labels["_global"][target_lower] = {
-            "mapped": mapped_lower, "hits": 1, "updated": now,
-        }
-
-    _mark_dirty()
-    _save()
+    label_upsert("_global", target_lower, mapped_lower)
 
 
 # ---------------------------------------------------------------------------
@@ -219,40 +132,26 @@ def _prune_old_failures():
 def record_action(app_name, intent, ok, verb=None, target=None,
                   method=None, via_label=None):
     """Record an action outcome in the history ring buffer."""
-    _ensure_loaded()
-    entry = {
-        "ts": datetime.now().isoformat(),
-        "app": app_name or "",
-        "intent": intent,
-        "ok": ok,
-    }
-    if verb:
-        entry["verb"] = verb
-    if target:
-        entry["target"] = target
-    if method:
-        entry["method"] = method
-    if via_label:
-        entry["via_label"] = via_label
+    from nexus.mind.db import action_insert, action_count, action_trim, method_upsert
 
-    _store["actions"].append(entry)
+    action_insert(
+        ts=datetime.now().isoformat(),
+        app=app_name or "",
+        intent=intent,
+        ok=ok,
+        verb=verb,
+        target=target,
+        method=method,
+        via_label=via_label,
+    )
 
     # FIFO cap
-    if len(_store["actions"]) > MAX_ACTIONS:
-        _store["actions"] = _store["actions"][-MAX_ACTIONS:]
+    if action_count() > MAX_ACTIONS:
+        action_trim(MAX_ACTIONS)
 
     # Update method stats per app
     if method and app_name:
-        app_key = app_name.lower()
-        methods = _store["methods"]
-        if app_key not in methods:
-            methods[app_key] = {}
-        if method not in methods[app_key]:
-            methods[app_key][method] = {"ok": 0, "fail": 0}
-        methods[app_key][method]["ok" if ok else "fail"] += 1
-
-    _mark_dirty()
-    _save()
+        method_upsert(app_name.lower(), method, ok)
 
 
 # ---------------------------------------------------------------------------
@@ -264,7 +163,8 @@ def hints_for_app(app_name):
 
     Returns a string to include in see() output, or None if no data.
     """
-    _ensure_loaded()
+    from nexus.mind.db import label_get_all_for_app, method_stats_for_app
+
     if not app_name:
         return None
 
@@ -272,16 +172,15 @@ def hints_for_app(app_name):
     app_key = app_name.lower()
 
     # Label translations
-    app_labels = _store["labels"].get(app_key, {})
+    app_labels = label_get_all_for_app(app_key)
     if app_labels:
-        mappings = sorted(app_labels.items(), key=lambda x: -x[1]["hits"])
-        pairs = [f"{orig} -> {e['mapped']}" for orig, e in mappings[:5]]
+        pairs = [f"{e['target']} -> {e['mapped']}" for e in app_labels[:5]]
         parts.append("Learned labels: " + ", ".join(pairs))
-        if len(mappings) > 5:
-            parts.append(f"  ... and {len(mappings) - 5} more")
+        if len(app_labels) > 5:
+            parts.append(f"  ... and {len(app_labels) - 5} more")
 
     # Method preferences
-    app_methods = _store["methods"].get(app_key, {})
+    app_methods = method_stats_for_app(app_key)
     if app_methods:
         prefs = []
         for method, counts in app_methods.items():
@@ -301,14 +200,10 @@ def hints_for_app(app_name):
 
 def stats():
     """Summary of what the system has learned."""
-    _ensure_loaded()
-    label_count = sum(
-        len(v) for k, v in _store["labels"].items() if k != "_global"
-    )
-    global_count = len(_store["labels"].get("_global", {}))
+    from nexus.mind.db import label_count, action_count, method_app_count
     return {
-        "label_mappings": label_count,
-        "global_mappings": global_count,
-        "actions_recorded": len(_store["actions"]),
-        "apps_tracked": len(_store["methods"]),
+        "label_mappings": label_count(exclude_global=True),
+        "global_mappings": label_count(global_only=True),
+        "actions_recorded": action_count(),
+        "apps_tracked": method_app_count(),
     }

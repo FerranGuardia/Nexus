@@ -43,7 +43,7 @@ from nexus.act.intents import (  # noqa: F401
     _handle_wait, _handle_observe, _poll_for,
     _handle_read_table, _handle_read_list,
     _handle_navigate, _handle_path_nav, _handle_run_js, _handle_switch_tab,
-    _handle_new_tab, _handle_close_tab,
+    _handle_new_tab, _handle_close_tab, _handle_get_console,
 )
 
 
@@ -131,11 +131,26 @@ def do(action, pid=None):
     if lower in ("get selection", "finder selection", "selected files"):
         return native.finder_selection()
 
+    if lower in ("get console", "console logs", "console", "get logs"):
+        return _handle_get_console()
+
     if lower in ("get table", "read table", "table"):
         return _handle_read_table(pid=pid)
 
     if lower in ("get list", "read list", "list"):
         return _handle_read_list(pid=pid)
+
+    # --- Workflow intents ---
+    if lower.startswith("record start ") or lower.startswith("record "):
+        return _handle_workflow(action, pid=pid)
+    if lower in ("record stop", "stop recording"):
+        return _handle_workflow(action, pid=pid)
+    if lower.startswith("replay "):
+        return _handle_workflow(action, pid=pid)
+    if lower in ("list workflows", "get workflows", "workflows"):
+        return _handle_workflow(action, pid=pid)
+    if lower.startswith("delete workflow "):
+        return _handle_workflow(action, pid=pid)
 
     # --- Window info getters ---
     if lower in ("list windows", "get windows", "windows", "show windows"):
@@ -302,6 +317,53 @@ def do(action, pid=None):
     if ">" in action:
         return native.click_menu(action, pid=pid)
     return _handle_click(action, pid=pid)
+
+
+def _handle_workflow(action, pid=None):
+    """Handle workflow recording, replay, and management intents."""
+    lower = action.lower().strip()
+
+    if lower in ("record stop", "stop recording"):
+        from nexus.mind.workflows import stop_recording
+        return stop_recording()
+
+    if lower.startswith("record start "):
+        name = action[len("record start "):].strip()
+        from nexus.mind.workflows import start_recording
+        return start_recording(name)
+
+    if lower.startswith("record ") and lower not in ("record stop",):
+        name = action[len("record "):].strip()
+        from nexus.mind.workflows import start_recording
+        return start_recording(name)
+
+    if lower.startswith("replay "):
+        wf_id = action[len("replay "):].strip()
+        from nexus.mind.workflows import replay_workflow
+        return replay_workflow(wf_id, pid=pid)
+
+    if lower in ("list workflows", "get workflows", "workflows"):
+        from nexus.mind.workflows import list_workflows
+        wfs = list_workflows()
+        if not wfs:
+            return {"ok": True, "text": "No workflows recorded. Use do('record start <name>') to start."}
+        lines = [f"Workflows ({len(wfs)}):"]
+        for wf in wfs:
+            lines.append(
+                f"  {wf['id']} — {wf['name']} ({wf['step_count']} steps, "
+                f"{wf['success_count']} ok / {wf['fail_count']} fail)"
+            )
+        return {"ok": True, "text": "\n".join(lines)}
+
+    if lower.startswith("delete workflow "):
+        wf_id = action[len("delete workflow "):].strip()
+        from nexus.mind.workflows import delete_workflow
+        deleted = delete_workflow(wf_id)
+        if deleted:
+            return {"ok": True, "action": "delete_workflow", "id": wf_id}
+        return {"ok": False, "error": f'Workflow "{wf_id}" not found'}
+
+    return {"ok": False, "error": f'Unknown workflow command: "{action}"'}
 
 
 def _run_chain(action, pid=None):

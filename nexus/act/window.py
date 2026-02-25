@@ -33,6 +33,14 @@ def _handle_move(rest):
         move window 2 left                    — specific window index
     """
     lower = rest.lower().strip()
+
+    # Move to display/monitor/screen N
+    display_match = re.match(
+        r"(?:window\s+)?(?:to\s+)?(?:display|monitor|screen)\s+(\d+)$", lower,
+    )
+    if display_match:
+        return _move_to_display(int(display_match.group(1)))
+
     from nexus.act.input import screen_size
     sz = screen_size()
     sw, sh = sz["width"], sz["height"]
@@ -232,3 +240,18 @@ def _list_windows():
 
     header = f"{len(wins)} windows on screen:"
     return {"ok": True, "action": "list_windows", "count": len(wins), "text": header + "\n" + "\n".join(lines)}
+
+
+def _move_to_display(display_num):
+    """Move the frontmost window to a specific display."""
+    from nexus.sense.access import get_displays
+    displays = get_displays()
+    if display_num < 1 or display_num > len(displays):
+        return {"ok": False, "error": f"Display {display_num} not found (have {len(displays)})"}
+    target = displays[display_num - 1]
+    # Position window in center half of target display
+    x = target["x"] + target["width"] // 4
+    y = target["y"] + target["height"] // 4
+    w = target["width"] // 2
+    h = target["height"] // 2
+    return native.move_window(None, x=x, y=y, w=w, h=h)

@@ -91,10 +91,13 @@ def click_element(name, pid=None, role=None):
     # Fallback: click at element center using coordinates
     pos = target.get("pos")
     size = target.get("size")
-    if pos and size:
+    if pos:
         from nexus.act.input import click as raw_click
-        cx = pos[0] + size[0] // 2
-        cy = pos[1] + size[1] // 2
+        if size:
+            cx = pos[0] + size[0] // 2
+            cy = pos[1] + size[1] // 2
+        else:
+            cx, cy = pos[0], pos[1]  # pos IS the center (OCR/template elements)
         emit(f"AX actions failed, clicking at ({cx},{cy})...")
         raw_click(cx, cy)
         return {

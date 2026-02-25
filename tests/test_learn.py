@@ -12,30 +12,30 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
 # ---------------------------------------------------------------------------
-# Helpers — each test gets a fresh temp dir and reset module state
+# Helpers — each test gets a fresh temp DB and reset module state
 # ---------------------------------------------------------------------------
 
 def _reset_learn():
-    """Reset learn module state for test isolation."""
+    """Reset learn + db module state for test isolation."""
+    import nexus.mind.db as db
     import nexus.mind.learn as learn
     tmpdir = tempfile.mkdtemp()
-    orig_dir = learn.LEARN_DIR
-    orig_file = learn.LEARN_FILE
-    learn.LEARN_DIR = Path(tmpdir)
-    learn.LEARN_FILE = Path(tmpdir) / "learned.json"
-    learn._store = None
-    learn._dirty = False
+    db.close()
+    db.DB_DIR = Path(tmpdir)
+    db.DB_PATH = Path(tmpdir) / "nexus.db"
+    db._conn = None
     learn._pending_failures.clear()
-    return tmpdir, orig_dir, orig_file
+    return tmpdir
 
 
-def _restore_learn(tmpdir, orig_dir, orig_file):
-    """Restore learn module state after test."""
+def _restore_learn(tmpdir):
+    """Restore module state after test."""
+    import nexus.mind.db as db
     import nexus.mind.learn as learn
-    learn.LEARN_DIR = orig_dir
-    learn.LEARN_FILE = orig_file
-    learn._store = None
-    learn._dirty = False
+    db.close()
+    db.DB_DIR = Path.home() / ".nexus"
+    db.DB_PATH = db.DB_DIR / "nexus.db"
+    db._conn = None
     learn._pending_failures.clear()
     shutil.rmtree(tmpdir, ignore_errors=True)
 
@@ -47,10 +47,10 @@ def _restore_learn(tmpdir, orig_dir, orig_file):
 class TestLabelLookup:
 
     def setup_method(self):
-        self._tmpdir, self._orig_dir, self._orig_file = _reset_learn()
+        self._tmpdir = _reset_learn()
 
     def teardown_method(self):
-        _restore_learn(self._tmpdir, self._orig_dir, self._orig_file)
+        _restore_learn(self._tmpdir)
 
     def test_lookup_empty_store(self):
         from nexus.mind.learn import lookup_label
@@ -97,11 +97,14 @@ class TestLabelLookup:
 
     def test_hit_count_increments(self):
         import nexus.mind.learn as learn
+        import nexus.mind.db as db
         learn.record_label("Save", "guardar", "TextEdit")
         learn.record_label("Save", "guardar", "TextEdit")
         learn.record_label("Save", "guardar", "TextEdit")
-        assert learn._store["labels"]["textedit"]["save"]["hits"] == 3
-        assert learn._store["labels"]["_global"]["save"]["hits"] == 3
+        entry = db.label_get("textedit", "save")
+        assert entry["hits"] == 3
+        global_entry = db.label_get("_global", "save")
+        assert global_entry["hits"] == 3
 
     def test_lookup_no_app(self):
         from nexus.mind.learn import record_label, lookup_label
@@ -109,12 +112,14 @@ class TestLabelLookup:
         # No app name — falls through to global
         assert lookup_label("Save") == "guardar"
 
-    def test_persists_to_disk(self):
+    def test_persists_in_db(self):
         import nexus.mind.learn as learn
+        import nexus.mind.db as db
         learn.record_label("Save", "guardar", "TextEdit")
-        # Reset in-memory state, force reload from disk
-        learn._store = None
-        assert learn.lookup_label("Save", "TextEdit") == "guardar"
+        # Verify data is in SQLite
+        entry = db.label_get("textedit", "save")
+        assert entry is not None
+        assert entry["mapped"] == "guardar"
 
 
 # ===========================================================================
@@ -124,10 +129,10 @@ class TestLabelLookup:
 class TestCorrelation:
 
     def setup_method(self):
-        self._tmpdir, self._orig_dir, self._orig_file = _reset_learn()
+        self._tmpdir = _reset_learn()
 
     def teardown_method(self):
-        _restore_learn(self._tmpdir, self._orig_dir, self._orig_file)
+        _restore_learn(self._tmpdir)
 
     def test_basic_correlation(self):
         from nexus.mind.learn import record_failure, correlate_success, lookup_label
@@ -196,52 +201,60 @@ class TestCorrelation:
 class TestActionHistory:
 
     def setup_method(self):
-        self._tmpdir, self._orig_dir, self._orig_file = _reset_learn()
+        self._tmpdir = _reset_learn()
 
     def teardown_method(self):
-        _restore_learn(self._tmpdir, self._orig_dir, self._orig_file)
+        _restore_learn(self._tmpdir)
 
     def test_record_success(self):
         import nexus.mind.learn as learn
+        import nexus.mind.db as db
         learn.record_action("TextEdit", "click Save", True, "click", "Save", "AXPress")
-        assert len(learn._store["actions"]) == 1
-        assert learn._store["actions"][0]["ok"] is True
-        assert learn._store["actions"][0]["method"] == "AXPress"
+        assert db.action_count() == 1
+        actions = db.action_list()
+        assert actions[0]["ok"] == 1
+        assert actions[0]["method"] == "AXPress"
 
     def test_record_failure(self):
         import nexus.mind.learn as learn
+        import nexus.mind.db as db
         learn.record_action("TextEdit", "click Save", False, "click", "Save")
-        assert len(learn._store["actions"]) == 1
-        assert learn._store["actions"][0]["ok"] is False
+        assert db.action_count() == 1
+        actions = db.action_list()
+        assert actions[0]["ok"] == 0
 
     def test_fifo_cap(self):
         import nexus.mind.learn as learn
+        import nexus.mind.db as db
         for i in range(learn.MAX_ACTIONS + 50):
             learn.record_action("App", f"click {i}", True, "click", str(i))
-        assert len(learn._store["actions"]) == learn.MAX_ACTIONS
-        # Oldest entries were dropped
-        assert learn._store["actions"][0]["target"] == "50"
+        assert db.action_count() == learn.MAX_ACTIONS
 
     def test_method_stats_tracked(self):
         import nexus.mind.learn as learn
+        import nexus.mind.db as db
         learn.record_action("TextEdit", "click Save", True, "click", "Save", "AXPress")
         learn.record_action("TextEdit", "click Save", True, "click", "Save", "AXPress")
         learn.record_action("TextEdit", "click Open", False, "click", "Open", "coordinate_click")
-        assert learn._store["methods"]["textedit"]["AXPress"]["ok"] == 2
-        assert learn._store["methods"]["textedit"]["coordinate_click"]["fail"] == 1
+        stats = db.method_stats_for_app("textedit")
+        assert stats["AXPress"]["ok"] == 2
+        assert stats["coordinate_click"]["fail"] == 1
 
     def test_via_label_recorded(self):
         import nexus.mind.learn as learn
+        import nexus.mind.db as db
         learn.record_action("TextEdit", "click Save", True, "click", "Save",
                             "AXPress", via_label="Save -> guardar")
-        assert learn._store["actions"][0]["via_label"] == "Save -> guardar"
+        actions = db.action_list()
+        assert actions[0]["via_label"] == "Save -> guardar"
 
     def test_optional_fields_omitted(self):
         import nexus.mind.learn as learn
+        import nexus.mind.db as db
         learn.record_action("TextEdit", "press cmd+s", True)
-        entry = learn._store["actions"][0]
-        assert "verb" not in entry
-        assert "method" not in entry
+        actions = db.action_list()
+        assert actions[0]["verb"] is None
+        assert actions[0]["method"] is None
 
 
 # ===========================================================================
@@ -251,10 +264,10 @@ class TestActionHistory:
 class TestHints:
 
     def setup_method(self):
-        self._tmpdir, self._orig_dir, self._orig_file = _reset_learn()
+        self._tmpdir = _reset_learn()
 
     def teardown_method(self):
-        _restore_learn(self._tmpdir, self._orig_dir, self._orig_file)
+        _restore_learn(self._tmpdir)
 
     def test_no_hints_unknown_app(self):
         from nexus.mind.learn import hints_for_app
@@ -312,10 +325,10 @@ class TestHints:
 class TestStats:
 
     def setup_method(self):
-        self._tmpdir, self._orig_dir, self._orig_file = _reset_learn()
+        self._tmpdir = _reset_learn()
 
     def teardown_method(self):
-        _restore_learn(self._tmpdir, self._orig_dir, self._orig_file)
+        _restore_learn(self._tmpdir)
 
     def test_empty_stats(self):
         from nexus.mind.learn import stats
@@ -352,33 +365,30 @@ class TestStats:
 class TestPersistence:
 
     def setup_method(self):
-        self._tmpdir, self._orig_dir, self._orig_file = _reset_learn()
+        self._tmpdir = _reset_learn()
 
     def teardown_method(self):
-        _restore_learn(self._tmpdir, self._orig_dir, self._orig_file)
+        _restore_learn(self._tmpdir)
 
-    def test_survives_reload(self):
+    def test_survives_db_reconnect(self):
         import nexus.mind.learn as learn
+        import nexus.mind.db as db
         learn.record_label("Save", "guardar", "TextEdit")
         learn.record_action("TextEdit", "click Save", True, method="AXPress")
-        # Force reload
-        learn._store = None
-        learn._ensure_loaded()
+        # Close and reopen DB
+        db.close()
+        db._conn = None
         assert learn.lookup_label("Save", "TextEdit") == "guardar"
-        assert len(learn._store["actions"]) == 1
+        assert db.action_count() == 1
 
-    def test_handles_corrupt_file(self):
+    def test_data_in_sqlite(self):
         import nexus.mind.learn as learn
-        learn.LEARN_FILE.parent.mkdir(parents=True, exist_ok=True)
-        learn.LEARN_FILE.write_text("not json {{{")
-        learn._store = None
-        learn._ensure_loaded()
-        # Should get empty store, not crash
-        assert learn._store["labels"] == {}
-
-    def test_handles_missing_file(self):
-        import nexus.mind.learn as learn
-        learn._store = None
-        learn._ensure_loaded()
-        assert learn._store["labels"] == {}
-        assert learn._store["actions"] == []
+        import nexus.mind.db as db
+        learn.record_label("Save", "guardar", "TextEdit")
+        # Verify directly in SQLite
+        conn = db._get_conn()
+        row = conn.execute(
+            "SELECT mapped FROM labels WHERE app='textedit' AND target='save'"
+        ).fetchone()
+        assert row is not None
+        assert row["mapped"] == "guardar"

@@ -124,7 +124,7 @@ def see(app=None, query=None, screenshot=False, menus=False, diff=False, content
         for el in elements:
             result_parts.append(f"  {_format_element(el)}")
     else:
-        # Single-pass: fetch elements, tables, and lists in one tree walk
+        # Perception pipeline: run all layers (AX → OCR → templates)
 
         # Hook: before_see — spatial cache read, app skill loading
         before_ctx = fire("before_see", {
@@ -138,10 +138,15 @@ def see(app=None, query=None, screenshot=False, menus=False, diff=False, content
             tables = []  # Can't cache (contain AX refs)
             lists = []
         else:
-            full = access.full_describe(pid, max_elements=fetch_limit)
-            elements = full["elements"]
-            tables = full["tables"]
-            lists = full["lists"]
+            from nexus.sense.plugins import run_pipeline
+            effective_pid = pid or (app_info["pid"] if app_info else None)
+            bounds = _app_window_bounds(effective_pid) if effective_pid else None
+            elements, pipeline_ctx = run_pipeline(
+                pid, app_info=app_info, bounds=bounds,
+                fetch_limit=fetch_limit,
+            )
+            tables = pipeline_ctx.get("tables", [])
+            lists = pipeline_ctx.get("lists", [])
 
         # Filter out noise (unlabeled static text/images, wrapper groups)
         clean = [el for el in elements if not _is_noise_element(el)]
@@ -347,6 +352,10 @@ def _format_element(el):
         parts.append("*focused*")
     if not enabled:
         parts.append("(disabled)")
+    # Show source for non-AX elements (OCR, template, etc.)
+    source = el.get("source")
+    if source and source != "ax":
+        parts.append(f"({source})")
 
     return " ".join(parts)
 
@@ -507,6 +516,7 @@ def _element_key(el):
 
 def _snapshot(elements, windows, focus, app_info):
     """Create a comparable snapshot of the current screen state."""
+    from nexus.mind.session import compute_layout_hash
     return {
         "app": app_info["name"] if app_info else "",
         "focus": _element_key(focus) if focus else None,
@@ -522,6 +532,7 @@ def _snapshot(elements, windows, focus, app_info):
             }
             for el in elements
         },
+        "layout_hash": compute_layout_hash(elements),
     }
 
 

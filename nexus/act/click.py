@@ -86,6 +86,12 @@ def _click_spatial(spatial_info, double=False, right=False, triple=False, modifi
     ref_cy = ref_pos[1] + (ref_size[1] // 2 if ref_size else 0)
 
     all_elements = describe_app(pid)
+    # Enrich with OCR/template elements from perception cache
+    try:
+        from nexus.sense.plugins import enrich_elements
+        all_elements = enrich_elements(all_elements, pid)
+    except Exception:
+        pass
     candidates = _filter_by_search(all_elements, search)
 
     # Exclude the reference element itself
@@ -135,21 +141,31 @@ def _click_spatial(spatial_info, double=False, right=False, triple=False, modifi
 
 
 def _click_in_region(search, region, double=False, right=False, triple=False, modifiers=None, pid=None):
-    """Click an element in a specific screen region."""
-    from nexus.sense.access import describe_app
+    """Click an element in a specific screen region.
+
+    Multi-monitor aware: uses the display containing the target app's window.
+    """
+    from nexus.sense.access import describe_app, display_for_window
     from nexus.act.input import screen_size
 
-    sz = screen_size()
-    w, h = sz["width"], sz["height"]
+    # Use per-display bounds if available (multi-monitor)
+    display = display_for_window(pid) if pid else None
+    if display:
+        w, h = display["width"], display["height"]
+        ox, oy = display["x"], display["y"]
+    else:
+        sz = screen_size()
+        w, h = sz["width"], sz["height"]
+        ox, oy = 0, 0
 
     regions = {
-        'top-left': (0, 0, w // 2, h // 2),
-        'top-right': (w // 2, 0, w, h // 2),
-        'bottom-left': (0, h // 2, w // 2, h),
-        'bottom-right': (w // 2, h // 2, w, h),
-        'top': (0, 0, w, h // 3),
-        'bottom': (0, 2 * h // 3, w, h),
-        'center': (w // 4, h // 4, 3 * w // 4, 3 * h // 4),
+        'top-left': (ox, oy, ox + w // 2, oy + h // 2),
+        'top-right': (ox + w // 2, oy, ox + w, oy + h // 2),
+        'bottom-left': (ox, oy + h // 2, ox + w // 2, oy + h),
+        'bottom-right': (ox + w // 2, oy + h // 2, ox + w, oy + h),
+        'top': (ox, oy, ox + w, oy + h // 3),
+        'bottom': (ox, oy + 2 * h // 3, ox + w, oy + h),
+        'center': (ox + w // 4, oy + h // 4, ox + 3 * w // 4, oy + 3 * h // 4),
     }
 
     bounds = regions.get(region)
@@ -159,6 +175,12 @@ def _click_in_region(search, region, double=False, right=False, triple=False, mo
     rx1, ry1, rx2, ry2 = bounds
 
     all_elements = describe_app(pid)
+    # Enrich with OCR/template elements from perception cache
+    try:
+        from nexus.sense.plugins import enrich_elements
+        all_elements = enrich_elements(all_elements, pid)
+    except Exception:
+        pass
     candidates = _filter_by_search(all_elements, search)
 
     in_region = []
@@ -200,8 +222,11 @@ def _click_resolved(target, double=False, right=False, triple=False, modifiers=N
         elif "AXConfirm" in actions:
             clicked = ax_perform(ref, "AXConfirm")
 
-    if pos and size:
-        cx, cy = pos[0] + size[0] // 2, pos[1] + size[1] // 2
+    if pos:
+        if size:
+            cx, cy = pos[0] + size[0] // 2, pos[1] + size[1] // 2
+        else:
+            cx, cy = pos[0], pos[1]  # pos IS the center (OCR/template elements)
         at = [cx, cy]
         if modifiers:
             raw_input.modifier_click(cx, cy, _resolve_modifiers(modifiers))
@@ -383,8 +408,11 @@ def _click_nth(ordinal_info, double=False, right=False, triple=False, modifiers=
     pos = target.get("pos")
     size = target.get("size")
     at = None
-    if pos and size:
-        cx, cy = pos[0] + size[0] // 2, pos[1] + size[1] // 2
+    if pos:
+        if size:
+            cx, cy = pos[0] + size[0] // 2, pos[1] + size[1] // 2
+        else:
+            cx, cy = pos[0], pos[1]  # pos IS the center (OCR/template elements)
         at = [cx, cy]
         if modifiers:
             raw_input.modifier_click(cx, cy, _resolve_modifiers(modifiers))
@@ -524,6 +552,40 @@ def _handle_click(target, double=False, right=False, triple=False, modifiers=Non
                 if retry.get("ok"):
                     retry["via_label"] = f"{target} -> {mapped}"
                     return retry
+        except Exception:
+            pass
+
+    # If still not found, try perception cache (OCR, template elements)
+    if not result.get("ok") and "not found" in result.get("error", "").lower():
+        try:
+            from nexus.sense.plugins import perception_find
+            p_matches = [m for m in perception_find(target, pid)
+                         if m.get("source") != "ax"]
+            if p_matches:
+                best = p_matches[0]
+                pos = best.get("pos")
+                if pos:
+                    px, py = pos[0], pos[1]
+                    emit(f"Found via {best.get('source', 'perception')}: "
+                         f'"{best.get("label")}" @ {px},{py}')
+                    if modifiers:
+                        raw_input.modifier_click(px, py, _resolve_modifiers(modifiers))
+                    elif triple:
+                        raw_input.triple_click(px, py)
+                    elif double:
+                        raw_input.double_click(px, py)
+                    elif right:
+                        raw_input.right_click(px, py)
+                    else:
+                        raw_input.click(px, py)
+                    clean = {k: v for k, v in best.items() if not k.startswith("_")}
+                    return {
+                        "ok": True,
+                        "action": f"click_via_{best.get('source', 'perception')}",
+                        "element": clean,
+                        "at": [px, py],
+                        "source": best.get("source"),
+                    }
         except Exception:
             pass
 

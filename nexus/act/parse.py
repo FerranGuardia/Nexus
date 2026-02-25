@@ -1,5 +1,6 @@
 """Parsing utilities for intent resolution."""
 
+import difflib
 import re
 
 
@@ -59,11 +60,30 @@ PHRASE_SYNONYMS = {
 }
 
 
+# All known verbs for typo tolerance (canonical + synonyms)
+_ALL_VERBS = frozenset(VERB_SYNONYMS.keys()) | frozenset(VERB_SYNONYMS.values()) | frozenset({
+    "click", "type", "press", "open", "switch", "scroll", "hover", "focus",
+    "drag", "tile", "move", "minimize", "restore", "resize", "fullscreen",
+    "menu", "fill", "wait", "observe", "notify", "say", "navigate", "js",
+    "close", "double-click", "right-click", "triple-click", "new", "run",
+    "eval", "execute", "set", "write", "activate", "position", "copy",
+    "paste", "undo", "redo", "quit", "exit", "maximize",
+    # Shorthand variants
+    "doubleclick", "dblclick", "rightclick", "rclick",
+    "tripleclick", "tclick", "goto",
+    # Modifier-click variants (prevent typo correction)
+    "shift-click", "cmd-click", "command-click", "opt-click",
+    "option-click", "ctrl-click", "control-click",
+})
+_TYPO_THRESHOLD = 0.75
+
+
 def _normalize_action(action):
     """Expand verb synonyms so the dispatcher sees canonical verbs.
 
-    Handles both single-word synonyms ("tap Save" → "click Save")
-    and multi-word phrases ("press on Save" → "click Save").
+    Handles both single-word synonyms ("tap Save" → "click Save"),
+    multi-word phrases ("press on Save" → "click Save"),
+    and typo correction ("clikc Save" → "click Save").
     """
     stripped = action.strip()
     lower = stripped.lower()
@@ -84,6 +104,18 @@ def _normalize_action(action):
             canonical = VERB_SYNONYMS[verb_lower]
             rest = parts[1] if len(parts) > 1 else ""
             return f"{canonical} {rest}".strip()
+
+        # Typo tolerance: fuzzy-match unknown verbs against known verbs
+        # Skip if action contains ">" (menu path like "Edit > Paste")
+        if len(verb_lower) >= 3 and verb_lower not in _ALL_VERBS and ">" not in stripped:
+            matches = difflib.get_close_matches(
+                verb_lower, _ALL_VERBS, n=1, cutoff=_TYPO_THRESHOLD,
+            )
+            if matches:
+                corrected = matches[0]
+                corrected = VERB_SYNONYMS.get(corrected, corrected)
+                rest = parts[1] if len(parts) > 1 else ""
+                return f"{corrected} {rest}".strip()
 
     return stripped
 

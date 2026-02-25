@@ -29,19 +29,21 @@ class TestMemoryRoundTrip:
     """Test memory tool set/get/list/delete/clear with a temp store."""
 
     def setup_method(self):
-        """Redirect memory store to a temp directory."""
-        import nexus.mind.store as store_mod
+        """Redirect DB to a temp directory."""
+        import nexus.mind.db as db
         self._tmpdir = tempfile.mkdtemp()
-        self._orig_dir = store_mod.STORE_DIR
-        self._orig_file = store_mod.STORE_FILE
-        store_mod.STORE_DIR = Path(self._tmpdir)
-        store_mod.STORE_FILE = Path(self._tmpdir) / "memory.json"
+        db.close()
+        db.DB_DIR = Path(self._tmpdir)
+        db.DB_PATH = Path(self._tmpdir) / "nexus.db"
+        db._conn = None
 
     def teardown_method(self):
-        """Restore original store paths."""
-        import nexus.mind.store as store_mod
-        store_mod.STORE_DIR = self._orig_dir
-        store_mod.STORE_FILE = self._orig_file
+        """Restore original DB paths."""
+        import nexus.mind.db as db
+        db.close()
+        db.DB_DIR = Path.home() / ".nexus"
+        db.DB_PATH = db.DB_DIR / "nexus.db"
+        db._conn = None
         import shutil
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 

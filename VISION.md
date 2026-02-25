@@ -23,12 +23,13 @@ Under the hood, Nexus routes through accessibility APIs, AppleScript, keyboard/m
 
 ## What's Built
 
-**15,000+ LOC across 25 source files + 14 test files. 980 tests, all passing.**
-**Skills system with 16 bundled skills, exposed as MCP resources.**
+**15,000+ LOC across 26 source files + 15 test files. 1084 tests, all passing.**
+**Skills system with 17 bundled skills, exposed as MCP resources.**
 **OCR fallback, system dialog detection, and dialog templates integrated into see().**
 **Merged do()+see() responses, keyboard shortcut preference, path navigation, and action bundles.**
 **Session state with spatial caching, action journal, and layout hash change detection.**
 **Hook pipeline with 7 built-in hooks for composable extensibility.**
+**Perception plugins: pluggable fallback stack (AX → OCR → templates), perception-aware do().**
 
 ### Perception (`see`)
 - macOS accessibility tree via AXUIElement (pyobjc)
@@ -97,7 +98,7 @@ Under the hood, Nexus routes through accessibility APIs, AppleScript, keyboard/m
 - JS execution and URL navigation
 
 ### Test Suite
-- **1008 tests**: ~579 resolve + 43 phase3 + 41 phase4 + 56 hooks + 55 smoke + 47 skills + 39 learn + 27 state + 26 observe + 36 system + 37 templates + 22 ocr + 14 capture + 124 intents
+- **1084 tests**: ~579 resolve + 43 phase3 + 41 phase4 + 56 hooks + 76 plugins + 55 smoke + 47 skills + 39 learn + 27 state + 26 observe + 36 system + 37 templates + 22 ocr + 14 capture + 124 intents
 - Unit tests mock all OS APIs — run anywhere, fast
 - Smoke tests exercise real code paths on macOS
 
@@ -121,7 +122,7 @@ VS Code hosts the MCP server, so it steals focus during actions. Mitigated with 
 3. ~~**Act smarter**~~ — ✅ merged responses, shortcut preference, path nav, bundles
 4. ~~**Remember**~~ — ✅ session state, spatial caching, action journal
 5. ~~**Hook pipeline**~~ — ✅ 7 built-in hooks, composable extensibility
-6. **Perception plugins** — pluggable fallback stack (AX → OCR → templates → VLM)
+6. ~~**Perception plugins**~~ — ✅ pluggable fallback stack (AX → OCR → templates), perception-aware do()
 7. **Polish** — ✅ 7a: app param fix, paste timing, type focus | remaining: typo tolerance, error recovery, CDP depth, multi-monitor
 8. **Long game** — workflow recording, navigation graphs, continual learning, skill marketplace
 

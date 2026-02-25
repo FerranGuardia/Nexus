@@ -235,7 +235,7 @@ def do(action: str, app: str | None = None) -> str:
     lower = action.strip().lower()
     is_getter = any(lower.startswith(g) for g in (
         "get ", "read ", "clipboard", "url", "tabs", "source", "selection",
-        "hover", "table", "list", "observe", "where ", "window info",
+        "hover", "table", "list", "observe", "where ", "window info", "console",
     ))
 
     # Snapshot before (skip for read-only actions)
@@ -259,8 +259,13 @@ def do(action: str, app: str | None = None) -> str:
 
     result = _do(action, pid=pid)
 
+    # Auto-retry on wrong app focused (Phase 7d)
+    if not result.get("ok") and app and pid:
+        result = _maybe_retry_wrong_app(result, action, app, pid, _do, emit)
+
     # Snapshot after + verify (brief pause lets UI update)
     changes = ""
+    after = None
     if before is not None and result.get("ok"):
         emit("Verifying changes...")
         time.sleep(0.15)
@@ -271,15 +276,18 @@ def do(action: str, app: str | None = None) -> str:
         except Exception:
             changes = ""
 
-    # Hook: after_do — learning recording, journal recording
+    # Hook: after_do — learning, journal, workflow recording, graph recording
     from nexus.hooks import fire
     verb, target = _parse_verb_target(action)
     app_name = _app_name_for_learning(app, pid)
+    before_hash = before.get("layout_hash") if before else None
+    after_hash = after.get("layout_hash") if after else None
     fire("after_do", {
         "action": action, "pid": pid, "result": result,
         "app_name": app_name, "elapsed": round(time.time() - _do_start_ts, 2),
         "changes": changes, "verb": verb, "target": target,
         "app_param": app,
+        "before_hash": before_hash, "after_hash": after_hash,
     })
 
     # Format as readable text
@@ -349,6 +357,16 @@ def do(action: str, app: str | None = None) -> str:
             parts.append(f"  On screen: {', '.join(result['found_roles'])}")
         if result.get("available"):
             parts.append(f"  Available: {', '.join(result['available'][:10])}")
+
+        # Hook: on_error — suggest CLI alternatives from skills
+        error_ctx = _fire_hook("on_error", {
+            "action": action, "pid": pid, "app_name": app_name,
+            "error": error_msg, "result": result, "app_param": app,
+        })
+        if error_ctx.get("skill_hint"):
+            parts.append(f"  Skill: {error_ctx['skill_hint']}")
+        for hint in error_ctx.get("extra_hints", []):
+            parts.append(f"  Hint: {hint}")
 
         # Rich context snapshot on failure
         try:
@@ -484,6 +502,35 @@ def _parse_verb_target(action):
     return verb, target
 
 
+def _maybe_retry_wrong_app(result, action, app, pid, _do, emit):
+    """Retry once if action failed because the wrong app has focus.
+
+    Only retries when app= param was explicitly set and the frontmost app
+    doesn't match. Max 1 retry. Returns original result if retry not needed.
+    """
+    try:
+        from nexus.sense.access import frontmost_app, invalidate_cache
+        current = frontmost_app()
+        if not current or current["pid"] == pid:
+            return result  # Correct app is focused, don't retry
+        emit(f"Wrong app focused ({current['name']}), re-activating {app}...")
+        import subprocess
+        subprocess.run(
+            ["osascript", "-e", f'tell application "{app}" to activate'],
+            capture_output=True, timeout=5,
+        )
+        import time
+        time.sleep(0.3)
+        invalidate_cache()
+        retry_result = _do(action, pid=pid)
+        if retry_result.get("ok"):
+            retry_result["retried"] = True
+            retry_result["retry_reason"] = f"Re-activated {app} (was {current['name']})"
+        return retry_result
+    except Exception:
+        return result  # Retry is best-effort
+
+
 def _detect_focus_target(action, app_param):
     """Detect which app should have focus after this action.
 
@@ -592,6 +639,37 @@ def skill_detail(skill_id: str) -> str:
         available = [s["id"] for s in list_skills()]
         return f'Skill "{skill_id}" not found. Available: {", ".join(available)}'
     return content
+
+
+@mcp.resource("nexus://workflows")
+def workflows_catalog() -> str:
+    """List all recorded workflows."""
+    from nexus.mind.workflows import list_workflows
+
+    wfs = list_workflows()
+    if not wfs:
+        return "No workflows recorded. Use do('record start <name>') to start recording."
+    lines = ["Recorded workflows:\n"]
+    for wf in wfs:
+        lines.append(f"  {wf['id']} — {wf['name']} ({wf['step_count']} steps)")
+    return "\n".join(lines)
+
+
+@mcp.resource("nexus://workflows/{workflow_id}")
+def workflow_detail(workflow_id: str) -> str:
+    """Read a workflow's steps."""
+    from nexus.mind.workflows import get_workflow
+
+    wf = get_workflow(workflow_id)
+    if not wf:
+        return f'Workflow "{workflow_id}" not found.'
+    lines = [f"Workflow: {wf['name']}"]
+    if wf.get("app"):
+        lines.append(f"App: {wf['app']}")
+    lines.append("Steps:")
+    for step in wf.get("steps", []):
+        lines.append(f"  {step['step_num']}. {step['action']}")
+    return "\n".join(lines)
 
 
 def main():

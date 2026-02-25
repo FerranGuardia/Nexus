@@ -25,6 +25,11 @@ class TestHookRegistry:
         from nexus.hooks import clear
         clear()
 
+    def teardown_method(self):
+        from nexus.hooks import clear, register_builtins
+        clear()
+        register_builtins()
+
     def test_register_and_fire(self):
         """Basic register + fire returns modified ctx."""
         from nexus.hooks import register, fire
@@ -314,7 +319,13 @@ class TestSpatialCacheWriteHook:
 
 
 class TestOcrFallbackHook:
-    """Test _ocr_fallback_hook."""
+    """Test _ocr_fallback_hook.
+
+    NOTE: OCR fallback moved to perception layer in Phase 6 (nexus/sense/plugins.py).
+    The _ocr_fallback_hook function still exists in hooks.py but is no longer
+    registered as a built-in hook. These tests verify the function still works
+    if called directly (backwards compatibility).
+    """
 
     def test_triggers_on_sparse_tree(self):
         """Triggers OCR when < 5 labeled elements."""
@@ -545,7 +556,7 @@ class TestBootstrap:
         after_see = registered("after_see")
         names = [name for _, name in after_see]
         assert "spatial_cache_write" in names
-        assert "ocr_fallback" in names
+        # ocr_fallback moved to perception layer (Phase 6)
         assert "system_dialog" in names
         assert "learning_hints" in names
 
@@ -553,6 +564,8 @@ class TestBootstrap:
         names = [name for _, name in after_do]
         assert "learning_record" in names
         assert "journal_record" in names
+        assert "workflow_record" in names
+        assert "graph_record" in names
 
     def test_builtin_priorities(self):
         """Built-in hooks have correct priority ordering."""
@@ -563,9 +576,15 @@ class TestBootstrap:
 
         after_see = registered("after_see")
         priorities = [p for p, _ in after_see]
-        # cache_write(10) < ocr(50) < dialog(60) < hints(70)
+        # cache_write(10) < dialog(60) < hints(70) — ocr moved to perception layer
         assert priorities == sorted(priorities)
-        assert priorities == [10, 50, 60, 70]
+        assert priorities == [10, 60, 70]
+
+        after_do = registered("after_do")
+        priorities = [p for p, _ in after_do]
+        # learning(10) < journal(20) < workflow(30) < graph(40)
+        assert priorities == sorted(priorities)
+        assert priorities == [10, 20, 30, 40]
 
     def test_register_builtins_idempotent(self):
         """Calling register_builtins twice doubles hooks (but doesn't crash)."""
@@ -591,7 +610,8 @@ class TestBootstrap:
         after_see = registered("after_see")
         names = [name for _, name in after_see]
         assert "custom_after_see" in names
-        assert "ocr_fallback" in names
+        # ocr_fallback moved to perception layer (Phase 6)
+        assert "system_dialog" in names
 
 
 # ===========================================================================
@@ -610,10 +630,19 @@ class TestSeeWithHooks:
 
     @patch("nexus.sense.fusion.access")
     @patch("nexus.sense.fusion._detect_system_dialogs", return_value="")
-    @patch("nexus.sense.fusion._ocr_fallback", return_value=[])
-    def test_see_fires_before_and_after_hooks(self, mock_ocr, mock_dialog, mock_access):
+    @patch("nexus.sense.access.full_describe")
+    @patch("nexus.sense.system.detect_system_dialogs", return_value=[])
+    def test_see_fires_before_and_after_hooks(self, mock_sys, mock_full, mock_dialog, mock_access):
         """see() fires before_see and after_see events."""
         from nexus.sense.fusion import see
+
+        elements = [
+            {"role": "button", "label": "Save", "_ax_role": "AXButton"},
+            {"role": "button", "label": "Cancel", "_ax_role": "AXButton"},
+            {"role": "button", "label": "Help", "_ax_role": "AXButton"},
+            {"role": "button", "label": "OK", "_ax_role": "AXButton"},
+            {"role": "button", "label": "Apply", "_ax_role": "AXButton"},
+        ]
 
         # Setup mocks
         mock_access.is_trusted.return_value = True
@@ -621,16 +650,8 @@ class TestSeeWithHooks:
         mock_access.window_title.return_value = "Test Window"
         mock_access.focused_element.return_value = None
         mock_access.windows.return_value = []
-        mock_access.full_describe.return_value = {
-            "elements": [
-                {"role": "button", "label": "Save", "_ax_role": "AXButton"},
-                {"role": "button", "label": "Cancel", "_ax_role": "AXButton"},
-                {"role": "button", "label": "Help", "_ax_role": "AXButton"},
-                {"role": "button", "label": "OK", "_ax_role": "AXButton"},
-                {"role": "button", "label": "Apply", "_ax_role": "AXButton"},
-            ],
-            "tables": [],
-            "lists": [],
+        mock_full.return_value = {
+            "elements": elements, "tables": [], "lists": [],
         }
 
         # Track which hooks fire
@@ -645,8 +666,9 @@ class TestSeeWithHooks:
 
     @patch("nexus.sense.fusion.access")
     @patch("nexus.sense.fusion._detect_system_dialogs", return_value="")
-    @patch("nexus.sense.fusion._ocr_fallback", return_value=[])
-    def test_see_spatial_cache_roundtrip(self, mock_ocr, mock_dialog, mock_access):
+    @patch("nexus.sense.access.full_describe")
+    @patch("nexus.sense.system.detect_system_dialogs", return_value=[])
+    def test_see_spatial_cache_roundtrip(self, mock_sys, mock_full, mock_dialog, mock_access):
         """First see() caches via hook, second see() hits cache via hook."""
         from nexus.sense.fusion import see
         from nexus.mind.session import spatial_stats
@@ -661,26 +683,28 @@ class TestSeeWithHooks:
         mock_access.window_title.return_value = "Window"
         mock_access.focused_element.return_value = None
         mock_access.windows.return_value = []
-        mock_access.full_describe.return_value = {
+        mock_full.return_value = {
             "elements": elements, "tables": [], "lists": [],
         }
 
         # Pass explicit PID (spatial cache requires non-None pid)
         see(app=200)
-        assert mock_access.full_describe.call_count == 1
+        assert mock_full.call_count == 1
         stats = spatial_stats()
         assert stats["misses"] >= 1
 
         # Second call — cache hit, should NOT call full_describe again
         see(app=200)
-        assert mock_access.full_describe.call_count == 1  # Still 1 — cache hit
+        assert mock_full.call_count == 1  # Still 1 — cache hit
         stats = spatial_stats()
         assert stats["hits"] >= 1
 
     @patch("nexus.sense.fusion.access")
     @patch("nexus.sense.fusion._detect_system_dialogs", return_value="")
-    def test_see_ocr_fires_on_sparse_tree(self, mock_dialog, mock_access):
-        """OCR hook fires when tree has < 5 labeled elements."""
+    @patch("nexus.sense.access.full_describe")
+    @patch("nexus.sense.system.detect_system_dialogs", return_value=[])
+    def test_see_ocr_fires_on_sparse_tree(self, mock_sys, mock_full, mock_dialog, mock_access):
+        """OCR perception layer fires when tree has < 5 labeled elements."""
         from nexus.sense.fusion import see
 
         mock_access.is_trusted.return_value = True
@@ -688,18 +712,22 @@ class TestSeeWithHooks:
         mock_access.window_title.return_value = "Blind"
         mock_access.focused_element.return_value = None
         mock_access.windows.return_value = []
-        mock_access.full_describe.return_value = {
+        mock_full.return_value = {
             "elements": [{"role": "group", "_ax_role": "AXGroup"}],  # 0 labeled
             "tables": [], "lists": [],
         }
 
-        ocr_results = [
-            {"label": "Open", "pos": [100, 200], "confidence": 0.95},
+        ocr_elements = [
+            {"role": "text (OCR)", "label": "Open", "source": "ocr",
+             "pos": (100, 200), "confidence": 0.95, "_bounds": {"x": 80, "y": 190, "w": 40, "h": 20}},
         ]
-        with patch("nexus.sense.fusion._ocr_fallback", return_value=ocr_results) as mock_ocr:
-            result = see()
-            mock_ocr.assert_called_once()
-            assert "OCR Fallback" in result["text"]
+        with patch("nexus.sense.ocr.ocr_region", return_value=[{"text": "Open", "confidence": 0.95, "center": {"x": 100, "y": 200}, "bounds": {"x": 80, "y": 190, "w": 40, "h": 20}}]):
+            with patch("nexus.sense.ocr.ocr_to_elements", return_value=ocr_elements):
+                with patch("nexus.sense.fusion._app_window_bounds", return_value=(0, 0, 800, 600)):
+                    result = see()
+                    # OCR elements should appear in see() output with (ocr) source marker
+                    assert "Open" in result["text"]
+                    assert "(ocr)" in result["text"]
 
 
 class TestCustomHookIntegration:
@@ -1143,3 +1171,148 @@ class TestSimpleTypeFocusedElement:
         mock_native.set_value.return_value = {"ok": True, "action": "set_value"}
         result = _handle_type("hello in search")
         mock_native.set_value.assert_called_once_with("search", "hello", pid=None)
+
+
+# ===========================================================================
+# Phase 7c: on_error hook — skill suggestions
+# ===========================================================================
+
+
+class TestOnErrorSkillSuggestion:
+    """Tests for _on_error_skill_suggestion hook."""
+
+    def setup_method(self):
+        from nexus.hooks import clear
+        clear()
+
+    def teardown_method(self):
+        from nexus.hooks import clear, register_builtins
+        clear()
+        register_builtins()
+
+    def test_suggests_skill_for_known_app(self):
+        from nexus.hooks import _on_error_skill_suggestion
+        ctx = {"app_name": "Mail", "error": 'Element "Send" not found'}
+        with patch("nexus.mind.skills.find_skill_for_app", return_value="email"):
+            result = _on_error_skill_suggestion(ctx)
+        assert result.get("skill_hint") == "nexus://skills/email"
+        assert any("email" in h for h in result.get("extra_hints", []))
+
+    def test_no_suggestion_for_unknown_app(self):
+        from nexus.hooks import _on_error_skill_suggestion
+        ctx = {"app_name": "RandomApp123", "error": "Element not found"}
+        with patch("nexus.mind.skills.find_skill_for_app", return_value=None):
+            result = _on_error_skill_suggestion(ctx)
+        assert "skill_hint" not in result
+
+    def test_skips_non_notfound_errors(self):
+        from nexus.hooks import _on_error_skill_suggestion
+        ctx = {"app_name": "Mail", "error": "Timeout waiting for element"}
+        result = _on_error_skill_suggestion(ctx)
+        assert "skill_hint" not in result
+
+    def test_skips_empty_app_name(self):
+        from nexus.hooks import _on_error_skill_suggestion
+        ctx = {"app_name": "", "error": "Element not found"}
+        result = _on_error_skill_suggestion(ctx)
+        assert "skill_hint" not in result
+
+    def test_hook_never_raises(self):
+        from nexus.hooks import _on_error_skill_suggestion
+        ctx = {"app_name": "Mail", "error": "Element not found"}
+        with patch("nexus.mind.skills.find_skill_for_app", side_effect=RuntimeError("boom")):
+            result = _on_error_skill_suggestion(ctx)
+        # Should return ctx unchanged, not raise
+        assert result is ctx
+
+    def test_fires_via_registry(self):
+        from nexus.hooks import register_builtins, fire
+        register_builtins()
+        ctx = {"app_name": "Safari", "error": "Element not found"}
+        with patch("nexus.mind.skills.find_skill_for_app", return_value="safari"):
+            result = fire("on_error", ctx)
+        assert result.get("skill_hint") == "nexus://skills/safari"
+
+    def test_does_not_stop_pipeline(self):
+        """on_error skill suggestion should enrich, never block."""
+        from nexus.hooks import _on_error_skill_suggestion
+        ctx = {"app_name": "Chrome", "error": "Element not found"}
+        with patch("nexus.mind.skills.find_skill_for_app", return_value="browser"):
+            result = _on_error_skill_suggestion(ctx)
+        assert result.get("stop") is not True
+
+
+# ===========================================================================
+# Phase 7d: Auto-retry on wrong app focused
+# ===========================================================================
+
+
+class TestAutoRetryWrongApp:
+    """Tests for _maybe_retry_wrong_app."""
+
+    def test_retries_when_wrong_app(self):
+        from nexus.server import _maybe_retry_wrong_app
+        mock_do = MagicMock(return_value={"ok": True, "action": "click"})
+        mock_emit = MagicMock()
+        fail_result = {"ok": False, "error": "not found"}
+
+        with patch("nexus.sense.access.frontmost_app", return_value={"name": "Code", "pid": 999}), \
+             patch("nexus.sense.access.invalidate_cache"), \
+             patch("subprocess.run"):
+            result = _maybe_retry_wrong_app(fail_result, "click Save", "Safari", 123, mock_do, mock_emit)
+
+        assert result["ok"] is True
+        assert result["retried"] is True
+        assert "Safari" in result["retry_reason"]
+        mock_do.assert_called_once_with("click Save", pid=123)
+
+    def test_no_retry_when_correct_app(self):
+        from nexus.server import _maybe_retry_wrong_app
+        mock_do = MagicMock()
+        mock_emit = MagicMock()
+        fail_result = {"ok": False, "error": "not found"}
+
+        with patch("nexus.sense.access.frontmost_app", return_value={"name": "Safari", "pid": 123}):
+            result = _maybe_retry_wrong_app(fail_result, "click Save", "Safari", 123, mock_do, mock_emit)
+
+        assert result is fail_result  # Unchanged
+        mock_do.assert_not_called()
+
+    def test_no_retry_when_frontmost_none(self):
+        from nexus.server import _maybe_retry_wrong_app
+        mock_do = MagicMock()
+        mock_emit = MagicMock()
+        fail_result = {"ok": False, "error": "not found"}
+
+        with patch("nexus.sense.access.frontmost_app", return_value=None):
+            result = _maybe_retry_wrong_app(fail_result, "click Save", "Safari", 123, mock_do, mock_emit)
+
+        assert result is fail_result
+        mock_do.assert_not_called()
+
+    def test_returns_original_on_retry_failure(self):
+        from nexus.server import _maybe_retry_wrong_app
+        retry_fail = {"ok": False, "error": "still not found"}
+        mock_do = MagicMock(return_value=retry_fail)
+        mock_emit = MagicMock()
+        fail_result = {"ok": False, "error": "not found"}
+
+        with patch("nexus.sense.access.frontmost_app", return_value={"name": "Code", "pid": 999}), \
+             patch("nexus.sense.access.invalidate_cache"), \
+             patch("subprocess.run"):
+            result = _maybe_retry_wrong_app(fail_result, "click Save", "Safari", 123, mock_do, mock_emit)
+
+        # Returns retry result (which also failed), not original
+        assert result is retry_fail
+        assert "retried" not in result
+
+    def test_exception_returns_original(self):
+        from nexus.server import _maybe_retry_wrong_app
+        mock_do = MagicMock()
+        mock_emit = MagicMock()
+        fail_result = {"ok": False, "error": "not found"}
+
+        with patch("nexus.sense.access.frontmost_app", side_effect=RuntimeError("boom")):
+            result = _maybe_retry_wrong_app(fail_result, "click Save", "Safari", 123, mock_do, mock_emit)
+
+        assert result is fail_result  # Original returned, no crash

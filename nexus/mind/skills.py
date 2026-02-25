@@ -79,6 +79,35 @@ def read_skill(skill_id: str) -> str | None:
     return None
 
 
+# App name → skill ID mapping for quick lookup
+_APP_SKILL_MAP = {
+    "mail": "email", "mail-app": "email",
+    "safari": "safari",
+    "google chrome": "browser", "chrome": "browser",
+    "finder": "finder",
+    "terminal": "terminal", "iterm": "terminal", "iterm2": "terminal",
+    "docker": "docker", "docker desktop": "docker",
+    "visual studio code": "vscode", "code": "vscode",
+    "system settings": "system-settings", "system preferences": "system-settings",
+}
+
+
+def find_skill_for_app(app_name):
+    """Find the most relevant skill for an app. Returns skill_id or None."""
+    if not app_name:
+        return None
+    lower = app_name.lower()
+    # Direct map first
+    for pattern, skill_id in _APP_SKILL_MAP.items():
+        if pattern in lower:
+            return skill_id
+    # Fuzzy search skill names/descriptions
+    for s in list_skills():
+        if lower in s["name"].lower() or lower in s.get("description", "").lower():
+            return s["id"]
+    return None
+
+
 def _scan_dir(directory: Path) -> list[Path]:
     """Find all .md files in a directory."""
     if not directory.exists():

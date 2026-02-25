@@ -6,7 +6,7 @@ Lower priority numbers run first. Stop on {"stop": True}.
 
 Events:
     before_see    — before element tree walk (can inject cached elements)
-    after_see     — after elements collected (OCR fallback, cache store, etc.)
+    after_see     — after elements collected (cache store, dialog info, learning hints)
     before_do     — before action dispatch (future: shortcuts, label sub)
     after_do      — after action result (learning, journal recording)
     on_error      — when do() fails (future: retry with fallbacks)
@@ -289,6 +289,74 @@ def _journal_record_hook(ctx):
     return ctx
 
 
+def _on_error_skill_suggestion(ctx):
+    """on_error: Suggest a CLI alternative from skills when a GUI action fails."""
+    try:
+        app_name = ctx.get("app_name", "")
+        error = ctx.get("error", "")
+        if not app_name or "not found" not in error.lower():
+            return ctx
+
+        from nexus.mind.skills import find_skill_for_app
+        skill_id = find_skill_for_app(app_name)
+        if skill_id:
+            ctx.setdefault("extra_hints", []).append(
+                f"CLI alternative: read skill nexus://skills/{skill_id}"
+            )
+            ctx["skill_hint"] = f"nexus://skills/{skill_id}"
+    except Exception:
+        pass
+    return ctx
+
+
+# ---------------------------------------------------------------------------
+# Phase 8: Workflow recording hook
+# ---------------------------------------------------------------------------
+
+
+def _workflow_record_hook(ctx):
+    """after_do: Record step if workflow recording is active."""
+    try:
+        from nexus.mind.workflows import is_recording, record_step
+        if not is_recording():
+            return ctx
+        result = ctx.get("result", {})
+        if result.get("ok"):
+            record_step(ctx.get("action", ""), layout_hash=ctx.get("after_hash"))
+    except Exception:
+        pass
+    return ctx
+
+
+# ---------------------------------------------------------------------------
+# Phase 8: Navigation graph hook
+# ---------------------------------------------------------------------------
+
+
+def _graph_record_hook(ctx):
+    """after_do: Record state transition in navigation graph."""
+    try:
+        before_hash = ctx.get("before_hash")
+        after_hash = ctx.get("after_hash")
+        if not before_hash or not after_hash or before_hash == after_hash:
+            return ctx
+        result = ctx.get("result", {})
+        if not result.get("ok"):
+            return ctx
+        from nexus.mind.graph import record_transition
+        record_transition(
+            before_hash=before_hash,
+            after_hash=after_hash,
+            action=ctx.get("action", ""),
+            app=ctx.get("app_name", ""),
+            ok=True,
+            elapsed=ctx.get("elapsed", 0),
+        )
+    except Exception:
+        pass
+    return ctx
+
+
 # ---------------------------------------------------------------------------
 # Bootstrap — register all built-in hooks
 # ---------------------------------------------------------------------------
@@ -298,12 +366,15 @@ def register_builtins():
     """Register all built-in hooks. Safe to call multiple times."""
     register("before_see", _spatial_cache_read, priority=10, name="spatial_cache_read")
     register("after_see", _spatial_cache_write, priority=10, name="spatial_cache_write")
-    register("after_see", _ocr_fallback_hook, priority=50, name="ocr_fallback")
+    # OCR fallback moved to perception layer in nexus/sense/plugins.py (Phase 6)
     register("after_see", _system_dialog_hook, priority=60, name="system_dialog")
     register("after_see", _learning_hints_hook, priority=70, name="learning_hints")
     register("before_do", _circuit_breaker_hook, priority=10, name="circuit_breaker")
     register("after_do", _learning_record_hook, priority=10, name="learning_record")
     register("after_do", _journal_record_hook, priority=20, name="journal_record")
+    register("after_do", _workflow_record_hook, priority=30, name="workflow_record")
+    register("after_do", _graph_record_hook, priority=40, name="graph_record")
+    register("on_error", _on_error_skill_suggestion, priority=50, name="skill_suggestion")
 
 
 # Auto-register on import

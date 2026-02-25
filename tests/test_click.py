@@ -521,3 +521,140 @@ class TestClickInContainer:
                 with patch("nexus.sense.access.ax_actions", return_value=[]):
                     result = do("click delete in the row with Alice")
                     assert result["ok"] is True
+
+
+# ===========================================================================
+# Phase 7f: Multi-monitor awareness
+# ===========================================================================
+
+
+class TestMultiMonitor:
+    """Tests for multi-monitor display detection and region calculation."""
+
+    def test_get_displays_returns_list(self):
+        from nexus.sense.access import get_displays
+        displays = get_displays()
+        assert isinstance(displays, list)
+        assert len(displays) >= 1
+        assert "width" in displays[0]
+        assert "height" in displays[0]
+        assert "main" in displays[0]
+
+    def test_default_display_fallback(self):
+        from nexus.sense.access import _default_display
+        displays = _default_display()
+        assert len(displays) == 1
+        assert displays[0]["main"] is True
+        assert displays[0]["x"] == 0
+        assert displays[0]["y"] == 0
+
+    def test_display_for_window_returns_display(self):
+        from nexus.sense.access import display_for_window
+        # With no matching window, should return main display
+        with patch("nexus.sense.access.get_displays", return_value=[
+            {"index": 1, "x": 0, "y": 0, "width": 1920, "height": 1080, "main": True},
+        ]):
+            with patch("nexus.sense.access.windows", return_value=[]):
+                d = display_for_window(12345)
+                assert d is not None
+                assert d["main"] is True
+
+    def test_display_for_window_second_monitor(self):
+        from nexus.sense.access import display_for_window
+        two_displays = [
+            {"index": 1, "x": 0, "y": 0, "width": 1920, "height": 1080, "main": True},
+            {"index": 2, "x": 1920, "y": 0, "width": 2560, "height": 1440, "main": False},
+        ]
+        window_on_display_2 = [
+            {"app": "Safari", "pid": 100, "title": "", "bounds": {"x": 2000, "y": 100, "w": 800, "h": 600}},
+        ]
+        with patch("nexus.sense.access.get_displays", return_value=two_displays):
+            with patch("nexus.sense.access.windows", return_value=window_on_display_2):
+                d = display_for_window(100)
+                assert d["index"] == 2
+                assert d["x"] == 1920
+
+    def test_region_uses_display_bounds(self):
+        """click_in_region should use per-display bounds for multi-monitor."""
+        second_display = {"index": 2, "x": 1920, "y": 0, "width": 2560, "height": 1440, "main": False}
+        # Element center: (3700, 100) — in top-right of display 2 (x > 1920+1280=3200)
+        element = {
+            "role": "button", "label": "Save", "_ax_role": "AXButton",
+            "pos": (3660, 85), "size": (80, 30), "_ref": MagicMock(),
+        }
+        with patch("nexus.sense.access.display_for_window", return_value=second_display), \
+             patch("nexus.sense.access.describe_app", return_value=[element]), \
+             patch("nexus.sense.access.ax_actions", return_value=[]), \
+             patch("nexus.act.click.raw_input") as mock_raw:
+            mock_raw.click.return_value = {"ok": True}
+            result = _click_in_region("Save", "top-right", pid=100)
+            assert result["ok"] is True
+
+    def test_region_single_monitor_unchanged(self):
+        """Single monitor: region bounds should be the same as before (no offset)."""
+        single_display = {"index": 1, "x": 0, "y": 0, "width": 1920, "height": 1080, "main": True}
+        element = {
+            "role": "button", "label": "OK", "_ax_role": "AXButton",
+            "pos": (1500, 200), "size": (60, 30), "_ref": MagicMock(),
+        }
+        with patch("nexus.sense.access.display_for_window", return_value=single_display), \
+             patch("nexus.sense.access.describe_app", return_value=[element]), \
+             patch("nexus.sense.access.ax_actions", return_value=[]), \
+             patch("nexus.act.click.raw_input") as mock_raw:
+            mock_raw.click.return_value = {"ok": True}
+            result = _click_in_region("OK", "top-right", pid=100)
+            assert result["ok"] is True
+
+
+class TestMoveToDisplay:
+    """Tests for do('move window to display N') intent."""
+
+    def test_move_to_display_2(self):
+        from nexus.act.window import _move_to_display
+        two_displays = [
+            {"index": 1, "x": 0, "y": 0, "width": 1920, "height": 1080, "main": True},
+            {"index": 2, "x": 1920, "y": 0, "width": 2560, "height": 1440, "main": False},
+        ]
+        with patch("nexus.sense.access.get_displays", return_value=two_displays), \
+             patch("nexus.act.window.native") as mock_native:
+            mock_native.move_window.return_value = {"ok": True}
+            result = _move_to_display(2)
+            mock_native.move_window.assert_called_once()
+            call_args = mock_native.move_window.call_args
+            assert call_args[1]["x"] >= 1920  # Should be on display 2
+
+    def test_move_to_invalid_display(self):
+        from nexus.act.window import _move_to_display
+        with patch("nexus.sense.access.get_displays", return_value=[
+            {"index": 1, "x": 0, "y": 0, "width": 1920, "height": 1080, "main": True},
+        ]):
+            result = _move_to_display(3)
+            assert result["ok"] is False
+            assert "not found" in result["error"]
+
+    @patch("nexus.act.click.native")
+    @patch("nexus.act.click.raw_input")
+    def test_routing_move_window_to_display(self, mock_raw, mock_native):
+        """do('move window to display 2') routes correctly."""
+        from nexus.act.resolve import do
+        two_displays = [
+            {"index": 1, "x": 0, "y": 0, "width": 1920, "height": 1080, "main": True},
+            {"index": 2, "x": 1920, "y": 0, "width": 2560, "height": 1440, "main": False},
+        ]
+        with patch("nexus.sense.access.get_displays", return_value=two_displays), \
+             patch("nexus.act.window.native") as mock_win_native:
+            mock_win_native.move_window.return_value = {"ok": True}
+            result = do("move window to display 2")
+            assert result["ok"] is True
+
+    @patch("nexus.act.click.native")
+    @patch("nexus.act.click.raw_input")
+    def test_routing_move_to_monitor(self, mock_raw, mock_native):
+        """Synonym: 'move to monitor 1'."""
+        from nexus.act.resolve import do
+        with patch("nexus.sense.access.get_displays", return_value=[
+            {"index": 1, "x": 0, "y": 0, "width": 1920, "height": 1080, "main": True},
+        ]), patch("nexus.act.window.native") as mock_win_native:
+            mock_win_native.move_window.return_value = {"ok": True}
+            result = do("move to monitor 1")
+            assert result["ok"] is True

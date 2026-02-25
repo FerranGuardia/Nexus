@@ -100,6 +100,19 @@ _ELECTRON_BUNDLE_IDS = {
     "com.figma.Desktop",
     "com.notion.Notion",
     "com.1password.1password",
+    # Phase 7e additions
+    "company.thebrowser.Browser",   # Arc
+    "com.brave.Browser",            # Brave
+    "com.microsoft.edgemac",        # Edge
+    "ru.keepcoder.Telegram",        # Telegram Desktop
+    "org.whispersystems.signal-desktop",  # Signal
+    "com.fournova.Tower3",          # Tower (Git client)
+    "com.axosoft.gitkraken",        # GitKraken
+    "com.bitwarden.desktop",        # Bitwarden
+    "com.postmanlabs.mac",          # Postman
+    "com.linear",                   # Linear
+    "com.tinyspeck.slackmacgap",    # Slack (older)
+    "com.todoist.mac.Todoist",      # Todoist
 }
 
 # Track which PIDs we've already enabled AXManualAccessibility on
@@ -299,6 +312,74 @@ def windows():
                 },
             })
     return result
+
+
+def get_displays():
+    """Enumerate all connected displays with their bounds.
+
+    Returns list sorted by x position (leftmost first):
+        [{index, x, y, width, height, main}]
+
+    Uses Quartz CGDisplay APIs (top-left origin, matches pyautogui).
+    """
+    try:
+        from Quartz import CGGetActiveDisplayList, CGDisplayBounds
+        max_displays = 16
+        err, active_displays, count = CGGetActiveDisplayList(max_displays, None, None)
+        if err != 0 or not active_displays:
+            return _default_display()
+
+        displays = []
+        for i, display_id in enumerate(active_displays[:count]):
+            bounds = CGDisplayBounds(display_id)
+            displays.append({
+                "index": i + 1,
+                "x": int(bounds.origin.x),
+                "y": int(bounds.origin.y),
+                "width": int(bounds.size.width),
+                "height": int(bounds.size.height),
+                "main": (bounds.origin.x == 0 and bounds.origin.y == 0),
+            })
+        return sorted(displays, key=lambda d: d["x"]) if displays else _default_display()
+    except Exception:
+        return _default_display()
+
+
+def _default_display():
+    """Fallback: single display from pyautogui."""
+    try:
+        import pyautogui
+        w, h = pyautogui.size()
+        return [{"index": 1, "x": 0, "y": 0, "width": w, "height": h, "main": True}]
+    except Exception:
+        return [{"index": 1, "x": 0, "y": 0, "width": 1920, "height": 1080, "main": True}]
+
+
+def display_for_window(pid):
+    """Find which display contains an app's main window.
+
+    Returns display dict or the main display as fallback.
+    """
+    displays = get_displays()
+    if len(displays) <= 1:
+        return displays[0] if displays else None
+
+    # Find the app's first window
+    for w in windows():
+        if w["pid"] == pid:
+            wx = w["bounds"]["x"]
+            wy = w["bounds"]["y"]
+            # Find which display contains this point
+            for d in displays:
+                if d["x"] <= wx < d["x"] + d["width"] and d["y"] <= wy < d["y"] + d["height"]:
+                    return d
+            break  # Window found but not on any display? Use main
+
+    # Fallback: main display
+    for d in displays:
+        if d.get("main"):
+            return d
+    return displays[0] if displays else None
 
 
 def focused_element(pid=None):

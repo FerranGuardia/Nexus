@@ -378,3 +378,52 @@ class TestBundledSkills:
         for skill_id in expected:
             assert skill_id in ids, f"Missing bundled skill: {skill_id}"
         assert len(result) == 17
+
+
+# ===========================================================================
+# find_skill_for_app (Phase 7c)
+# ===========================================================================
+
+
+class TestFindSkillForApp:
+    """Tests for find_skill_for_app — app name to skill ID resolution."""
+
+    def test_mail_returns_email(self):
+        assert skills.find_skill_for_app("Mail") == "email"
+
+    def test_safari_returns_safari(self):
+        assert skills.find_skill_for_app("Safari") == "safari"
+
+    def test_chrome_returns_browser(self):
+        assert skills.find_skill_for_app("Google Chrome") == "browser"
+
+    def test_finder_returns_finder(self):
+        assert skills.find_skill_for_app("Finder") == "finder"
+
+    def test_vscode_returns_vscode(self):
+        assert skills.find_skill_for_app("Visual Studio Code") == "vscode"
+
+    def test_code_returns_vscode(self):
+        assert skills.find_skill_for_app("Code") == "vscode"
+
+    def test_terminal_returns_terminal(self):
+        assert skills.find_skill_for_app("Terminal") == "terminal"
+
+    def test_docker_returns_docker(self):
+        assert skills.find_skill_for_app("Docker Desktop") == "docker"
+
+    def test_system_settings_returns_system_settings(self):
+        assert skills.find_skill_for_app("System Settings") == "system-settings"
+
+    def test_none_returns_none(self):
+        assert skills.find_skill_for_app(None) is None
+
+    def test_empty_string_returns_none(self):
+        assert skills.find_skill_for_app("") is None
+
+    def test_unknown_app_returns_none(self):
+        assert skills.find_skill_for_app("SomeRandomApp12345") is None
+
+    def test_case_insensitive(self):
+        assert skills.find_skill_for_app("MAIL") == "email"
+        assert skills.find_skill_for_app("safari") == "safari"

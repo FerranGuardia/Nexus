@@ -841,3 +841,106 @@ class TestParseContainer:
     def test_multi_word_reference(self):
         result = _parse_container("delete in the row with John Doe")
         assert result == ("delete", "John Doe", None)
+
+
+# ===========================================================================
+# TestTypoTolerance — fuzzy verb matching (Phase 7b)
+# ===========================================================================
+
+
+class TestTypoTolerance:
+    """Tests for typo tolerance in _normalize_action."""
+
+    # --- Common typos should be corrected ---
+
+    def test_clikc_becomes_click(self):
+        assert _normalize_action("clikc Save") == "click Save"
+
+    def test_clickk_becomes_click(self):
+        assert _normalize_action("clickk Save") == "click Save"
+
+    def test_clck_becomes_click(self):
+        assert _normalize_action("clck Save") == "click Save"
+
+    def test_tpye_becomes_type(self):
+        assert _normalize_action("tpye hello") == "type hello"
+
+    def test_tyep_becomes_type(self):
+        assert _normalize_action("tyep hello") == "type hello"
+
+    def test_pres_becomes_press(self):
+        assert _normalize_action("pres cmd+s") == "press cmd+s"
+
+    def test_scrol_becomes_scroll(self):
+        assert _normalize_action("scrol down") == "scroll down"
+
+    def test_scrool_becomes_scroll(self):
+        assert _normalize_action("scrool down") == "scroll down"
+
+    def test_opne_becomes_open(self):
+        assert _normalize_action("opne Safari") == "open Safari"
+
+    def test_hovr_becomes_hover(self):
+        assert _normalize_action("hovr button") == "hover button"
+
+    def test_focsu_becomes_focus(self):
+        assert _normalize_action("focsu field") == "focus field"
+
+    # --- Typo in a synonym should resolve to the canonical verb ---
+
+    def test_tapp_becomes_click(self):
+        # "tapp" is close to "tap" which is a synonym for "click"
+        assert _normalize_action("tapp Save") == "click Save"
+
+    # --- Correct verbs should be unchanged ---
+
+    def test_click_unchanged(self):
+        assert _normalize_action("click Save") == "click Save"
+
+    def test_type_unchanged(self):
+        assert _normalize_action("type hello") == "type hello"
+
+    def test_press_unchanged(self):
+        assert _normalize_action("press cmd+s") == "press cmd+s"
+
+    def test_scroll_unchanged(self):
+        assert _normalize_action("scroll down") == "scroll down"
+
+    # --- Short words (< 3 chars) should NOT fuzzy match ---
+
+    def test_short_word_no_false_positive(self):
+        assert _normalize_action("xy Save") == "xy Save"
+
+    def test_two_char_no_match(self):
+        assert _normalize_action("ab test") == "ab test"
+
+    # --- Completely wrong words should not match ---
+
+    def test_completely_wrong_no_match(self):
+        assert _normalize_action("zzzzz Save") == "zzzzz Save"
+
+    def test_random_word_no_match(self):
+        assert _normalize_action("frobnicate widget") == "frobnicate widget"
+
+    # --- Verb-only typos (no rest) ---
+
+    def test_verb_only_typo(self):
+        result = _normalize_action("clikc")
+        assert result == "click"
+
+    # --- Case insensitivity ---
+
+    def test_typo_case_insensitive(self):
+        assert _normalize_action("CLIKC Save") == "click Save"
+
+    def test_typo_mixed_case(self):
+        assert _normalize_action("Clikc Save") == "click Save"
+
+    # --- Menu paths should NOT be typo-corrected ---
+
+    def test_menu_path_not_corrected(self):
+        # "Edit > Paste" — "Edit" should not fuzzy-match to "exit"
+        assert _normalize_action("Edit > Paste") == "Edit > Paste"
+
+    def test_menu_path_with_file(self):
+        assert _normalize_action("File > Save As") == "File > Save As"
