@@ -1,7 +1,8 @@
 """Unified perception — the `see` tool.
 
-Fuses accessibility tree, window list, and screenshots into
-a single, token-efficient text snapshot of the computer.
+Fuses accessibility tree, window list, screenshots, OCR fallback,
+and system dialog detection into a single, token-efficient text
+snapshot of the computer.
 """
 
 from nexus.sense import access, screen
@@ -141,6 +142,26 @@ def see(app=None, query=None, screenshot=False, menus=False, diff=False, content
 
     if not elements:
         result_parts.append("  (no elements found)")
+
+    # OCR fallback — when AX tree returns too few labeled elements
+    ocr_elements = []
+    labeled_count = sum(1 for el in elements if el.get("label"))
+    if labeled_count < 5 and not query:
+        ocr_elements = _ocr_fallback(pid, app_info)
+        if ocr_elements:
+            result_parts.append("")
+            result_parts.append(f"OCR Fallback ({len(ocr_elements)} text regions):")
+            for el in ocr_elements[:30]:
+                conf = el.get("confidence", 0)
+                result_parts.append(f'  [text (OCR)] "{el["label"]}" @ {el["pos"][0]},{el["pos"][1]} ({conf:.0%})')
+            if len(ocr_elements) > 30:
+                result_parts.append(f"  ... and {len(ocr_elements) - 30} more")
+
+    # System dialog detection — check for Gatekeeper, SecurityAgent, etc.
+    system_dialog_text = _detect_system_dialogs()
+    if system_dialog_text:
+        result_parts.append("")
+        result_parts.append(system_dialog_text)
 
     # Structured tables — from the single-pass walk (or separate for query mode)
     if not tables and not query:
@@ -369,6 +390,61 @@ def _app_info_for_pid(pid):
         if a["pid"] == pid:
             return a
     return None
+
+
+# ---------------------------------------------------------------------------
+# Post-action state — compact view for merged do()+see() responses
+# ---------------------------------------------------------------------------
+
+def compact_state(pid=None, max_elements=15):
+    """Return a compact text summary of the current screen state.
+
+    Designed for post-action responses — shows enough for the agent
+    to decide its next action without a separate see() call.
+    Reuses cached tree data from snap(), so this is nearly free.
+
+    Returns a text string (never None).
+    """
+    if pid is None:
+        app_info = access.frontmost_app()
+        if app_info:
+            pid = app_info["pid"]
+    else:
+        app_info = _app_info_for_pid(pid)
+
+    if app_info is None and pid:
+        apps = access.running_apps()
+        app_info = next((a for a in apps if a["pid"] == pid), None)
+
+    parts = []
+
+    # App + window
+    if app_info:
+        win_title = access.window_title(pid)
+        header = f"App: {app_info['name']}"
+        if win_title:
+            header += f' — "{win_title}"'
+        parts.append(header)
+
+    # Focused element (critical for knowing what to type/press next)
+    focus = access.focused_element(pid)
+    if focus:
+        parts.append(f"Focus: {_format_element(focus)}")
+
+    # Key interactive elements (compact — uses cached tree from snap)
+    elements = access.describe_app(pid)
+    if elements:
+        clean = [el for el in elements if not _is_noise_element(el)]
+        clean = _suppress_wrapper_groups(clean)
+        shown = clean[:max_elements]
+        parts.append(f"Elements ({len(clean)}):")
+        for el in shown:
+            parts.append(f"  {_format_element(el)}")
+        remaining = len(clean) - len(shown)
+        if remaining > 0:
+            parts.append(f"  ... and {remaining} more (use see() for full tree)")
+
+    return "\n".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -630,6 +706,97 @@ def _web_content():
         content = page_content()
         if content:
             return f"--- Web Page (via CDP) ---\n{content}"
+    except Exception:
+        pass
+    return None
+
+
+# ---------------------------------------------------------------------------
+# System dialog detection
+# ---------------------------------------------------------------------------
+
+def _detect_system_dialogs():
+    """Check for system dialogs (Gatekeeper, SecurityAgent, etc.).
+
+    Returns formatted text for see() output, or empty string.
+    """
+    try:
+        from nexus.sense.system import detect_system_dialogs, classify_dialog, format_system_dialogs
+        dialogs = detect_system_dialogs()
+        if not dialogs:
+            return ""
+
+        # Try to OCR and classify each dialog
+        classifications = []
+        for d in dialogs:
+            ocr_results = _ocr_dialog_region(d)
+            classification = classify_dialog(d, ocr_results)
+            classifications.append(classification)
+
+        return format_system_dialogs(dialogs, classifications)
+    except Exception:
+        return ""
+
+
+def _ocr_dialog_region(dialog):
+    """OCR a system dialog's region. Returns OCR results or empty list."""
+    try:
+        from nexus.sense.ocr import ocr_region
+        b = dialog.get("bounds", {})
+        x, y, w, h = b.get("x", 0), b.get("y", 0), b.get("w", 0), b.get("h", 0)
+        if w > 0 and h > 0:
+            return ocr_region(x, y, w, h)
+    except Exception:
+        pass
+    return []
+
+
+# ---------------------------------------------------------------------------
+# OCR fallback for sparse AX trees
+# ---------------------------------------------------------------------------
+
+def _ocr_fallback(pid, app_info):
+    """Run OCR when the AX tree has too few labeled elements.
+
+    Captures the app's window region and runs Apple Vision OCR.
+    Returns list of element dicts compatible with see() format.
+    """
+    try:
+        from nexus.sense.ocr import ocr_region, ocr_to_elements
+
+        # Get window bounds for the target app
+        bounds = _app_window_bounds(pid)
+        if not bounds:
+            return []
+
+        x, y, w, h = bounds
+        if w <= 0 or h <= 0:
+            return []
+
+        ocr_results = ocr_region(x, y, w, h)
+        if not ocr_results:
+            return []
+
+        return ocr_to_elements(ocr_results)
+    except Exception:
+        return []
+
+
+def _app_window_bounds(pid):
+    """Get the main window bounds for a PID. Returns (x, y, w, h) or None."""
+    try:
+        from Quartz import CGWindowListCopyWindowInfo, kCGWindowListOptionOnScreenOnly, kCGNullWindowID
+        windows = CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly, kCGNullWindowID)
+        if not windows:
+            return None
+
+        for w in windows:
+            if w.get("kCGWindowOwnerPID") == pid:
+                b = w.get("kCGWindowBounds", {})
+                width = b.get("Width", 0)
+                height = b.get("Height", 0)
+                if width > 50 and height > 50:
+                    return (b.get("X", 0), b.get("Y", 0), width, height)
     except Exception:
         pass
     return None
