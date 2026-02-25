@@ -1,6 +1,6 @@
 # Nexus Roadmap
 
-*February 2026. Informed by 12 research documents, 1 field test, and the experience of being the end user.*
+*February 2026. Informed by 12 research documents, 2 field tests, and the experience of being the end user.*
 
 This project is not done. An agent that can't click a button after 20 tries in a Docker install wizard is not done. An agent that goes blind every time a system dialog appears is not done. An agent that takes 26 seconds for a 4-step navigation that a human does in 2 is not done.
 
@@ -10,10 +10,10 @@ The foundation is solid — three tools, 70+ intents, 726 tests, real desktop co
 
 ## Where We Are
 
-**v2.4 — Phases 1, 2, 3, 4 & 5 complete**
+**v2.4 — Phases 1–5 complete, Phase 7a field test fixes applied**
 
 ```
-15,000+ LOC | 980 tests | 25 source files | 16 skill files
+15,000+ LOC | 1008 tests | 25 source files | 17 skill files
 see/do/memory working via MCP | 75+ intent patterns
 Action verification | Self-improving label memory
 Observation mode | Control panel | Chrome CDP
@@ -52,7 +52,7 @@ Hook pipeline (7 built-in hooks, composable extensibility)
 - ~~No session state — each tool call starts from zero~~ → spatial cache + action journal
 - ~~Adding new behaviors requires editing core code~~ → hook pipeline makes everything composable
 - Some Electron apps return empty trees (Docker Desktop) → OCR fallback helps but coordinate clicking is still imprecise
-- see(app=) via MCP falls back to VS Code too often
+- ~~see(app=) via MCP falls back to VS Code too often~~ → fixed: normalize FastMCP empty string params
 
 ---
 
@@ -286,6 +286,23 @@ Built-in hooks (migrated from inline code):
 - `on_system_dialog` — auto-handle dialogs
 
 **Why this matters:** Adding a new behavior is now ~15 lines (write function + register) instead of ~50 lines of core edits. Every Phase 2-4 behavior is a hook. New perception layers, error recovery strategies, and app-specific optimizations plug in without touching core code.
+
+---
+
+## Phase 7a: Field Test Blocker Fixes ✅ COMPLETE
+
+**Completed Feb 25, 2026. 3 fixes + 13 new tests (1008 total).**
+
+Targeted fixes for the concrete bugs that blocked Field Tests 1 and 2. Practical polish before architectural work.
+
+### Fix 1: `see(app=)` Empty String Normalization
+FastMCP passes `""` instead of `None` for unspecified optional params. `if app` evaluates to `False` for empty strings, so `pid=None` → shows VS Code instead of the requested app. Fixed by normalizing at server entry: `app = app.strip() if isinstance(app, str) and app.strip() else None`.
+
+### Fix 2: Clipboard Paste Timing
+`paste_text()` waited only 0.1s after Cmd+V before restoring clipboard. Mail.app's async IMAP/SMTP fields didn't absorb the paste in time — 5 of 26 chars appeared. Increased to 0.3s.
+
+### Fix 3: Simple `type X` Focus Verification
+`do("type smtp.server.com")` (no `"in field"`) called `raw_input.type_text()` blindly without verifying focus. Now tries AX `set_value` on the focused element first (proper focus + value setting), falls back to raw input if AX fails.
 
 ---
 

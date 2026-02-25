@@ -97,7 +97,7 @@ Under the hood, Nexus routes through accessibility APIs, AppleScript, keyboard/m
 - JS execution and URL navigation
 
 ### Test Suite
-- **980 tests**: ~579 resolve + 43 phase3 + 41 phase4 + 41 hooks + 55 smoke + 47 skills + 39 learn + 27 state + 26 observe + 36 system + 37 templates + 22 ocr + 14 capture
+- **1008 tests**: ~579 resolve + 43 phase3 + 41 phase4 + 56 hooks + 55 smoke + 47 skills + 39 learn + 27 state + 26 observe + 36 system + 37 templates + 22 ocr + 14 capture + 124 intents
 - Unit tests mock all OS APIs — run anywhere, fast
 - Smoke tests exercise real code paths on macOS
 
@@ -110,7 +110,7 @@ Nexus automates GUI apps — but most power users already live in the terminal. 
 macOS AXRoleDescription is localized — on a Spanish system, buttons are "botón", links are "enlace". The code uses AXRole (locale-independent) for matching and the self-improving memory auto-learns label translations. But fuzzy matching across locales could still struggle. Partially handled, not robustly tested.
 
 ### 3. VS Code Focus-Stealing
-VS Code hosts the MCP server, so it steals focus during actions. Mitigated with `_schedule_focus_restore()` which re-activates the target app after a 0.4s delay. Works well but isn't perfect for rapid-fire actions.
+VS Code hosts the MCP server, so it steals focus during actions. Mitigated with `_schedule_focus_restore()` which re-activates the target app after a 0.4s delay. Works well but isn't perfect for rapid-fire actions. The `see(app=)` empty-string bug (FastMCP passing `""` instead of `None`) has been fixed — string app names now resolve correctly.
 
 ## What's Left to Build
 
@@ -122,7 +122,7 @@ VS Code hosts the MCP server, so it steals focus during actions. Mitigated with 
 4. ~~**Remember**~~ — ✅ session state, spatial caching, action journal
 5. ~~**Hook pipeline**~~ — ✅ 7 built-in hooks, composable extensibility
 6. **Perception plugins** — pluggable fallback stack (AX → OCR → templates → VLM)
-7. **Polish** — typo tolerance, smarter error recovery, CDP depth, multi-monitor
+7. **Polish** — ✅ 7a: app param fix, paste timing, type focus | remaining: typo tolerance, error recovery, CDP depth, multi-monitor
 8. **Long game** — workflow recording, navigation graphs, continual learning, skill marketplace
 
 ## Design Principles (Non-Negotiable)
