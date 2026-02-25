@@ -73,6 +73,12 @@ def see(
     from nexus.sense.fusion import see as _see, _resolve_pid
     from nexus.state import start_action, end_action, emit
 
+    try:
+        from nexus.mind.session import tick
+        tick()
+    except Exception:
+        pass
+
     # Resolve app name to PID at server level (avoids MCP parameter passing issues)
     pid = _resolve_pid(app) if app else None
     desc = f"query={query}" if query else "full tree"
@@ -192,6 +198,14 @@ def do(action: str, app: str | None = None) -> str:
     from nexus.state import read_state, write_state, read_and_clear_hint, start_action, end_action, emit
     import time
 
+    try:
+        from nexus.mind.session import tick
+        tick()
+    except Exception:
+        pass
+
+    _do_start_ts = time.time()
+
     # --- Panel integration: check pause + read hints ---
     state = read_state()
     if state.get("paused"):
@@ -228,28 +242,16 @@ def do(action: str, app: str | None = None) -> str:
         except Exception:
             before = None
 
-    result = _do(action, pid=pid)
+    # Hook: before_do — circuit breaker (stops on consecutive failures)
+    from nexus.hooks import fire as _fire_hook
+    before_do_ctx = _fire_hook("before_do", {
+        "action": action, "pid": pid, "app_param": app,
+    })
+    if before_do_ctx.get("stop"):
+        end_action("failed")
+        return before_do_ctx.get("error", "Action blocked by before_do hook.")
 
-    # Record action outcome for learning (label correlation + history)
-    try:
-        from nexus.mind.learn import record_action, record_failure, correlate_success
-        app_name = _app_name_for_learning(app, pid)
-        verb, target = _parse_verb_target(action)
-        if result.get("ok"):
-            correlated = correlate_success(app_name, verb, target)
-            record_action(
-                app_name=app_name, intent=action, ok=True,
-                verb=verb, target=target,
-                method=result.get("action"),
-                via_label=result.get("via_label") or (target if correlated else None),
-            )
-        else:
-            if "not found" in result.get("error", "").lower():
-                record_failure(app_name, verb, target)
-            record_action(app_name=app_name, intent=action, ok=False,
-                          verb=verb, target=target)
-    except Exception:
-        pass  # Learning must never break the action pipeline
+    result = _do(action, pid=pid)
 
     # Snapshot after + verify (brief pause lets UI update)
     changes = ""
@@ -262,6 +264,17 @@ def do(action: str, app: str | None = None) -> str:
             changes = verify(before, after)
         except Exception:
             changes = ""
+
+    # Hook: after_do — learning recording, journal recording
+    from nexus.hooks import fire
+    verb, target = _parse_verb_target(action)
+    app_name = _app_name_for_learning(app, pid)
+    fire("after_do", {
+        "action": action, "pid": pid, "result": result,
+        "app_name": app_name, "elapsed": round(time.time() - _do_start_ts, 2),
+        "changes": changes, "verb": verb, "target": target,
+        "app_param": app,
+    })
 
     # Format as readable text
     parts = []
@@ -304,6 +317,17 @@ def do(action: str, app: str | None = None) -> str:
                     parts.append(state_text)
             except Exception:
                 pass  # State must never break the action response
+        # Session journal — recent actions for proprioception
+        if not is_getter:
+            try:
+                from nexus.mind.session import journal_recent
+                recent = journal_recent(n=3)
+                if recent:
+                    parts.append("")
+                    parts.append("--- Recent ---")
+                    parts.append(recent)
+            except Exception:
+                pass
         # Restore focus to target app (VS Code steals it back on MCP response)
         if focus_app:
             _schedule_focus_restore(focus_app)
@@ -351,6 +375,17 @@ def do(action: str, app: str | None = None) -> str:
         except Exception:
             pass  # Context must never break the error response
 
+        # Session journal — recent actions for proprioception
+        try:
+            from nexus.mind.session import journal_recent
+            recent = journal_recent(n=3)
+            if recent:
+                parts.append("")
+                parts.append("--- Recent ---")
+                parts.append(recent)
+        except Exception:
+            pass
+
         return "\n".join(parts)
 
 
@@ -381,6 +416,12 @@ def memory(
         clear - Delete all:     memory(op="clear")
         stats - Show learning stats (label mappings, action history size)
     """
+    try:
+        from nexus.mind.session import tick
+        tick()
+    except Exception:
+        pass
+
     # Learning stats — separate from user memory
     if op.lower().strip() == "stats":
         try:

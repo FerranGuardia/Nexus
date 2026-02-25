@@ -126,6 +126,13 @@ def _on_notification(observer, element, notification, refcon):
     # Invalidate tree cache so next see() gets fresh data
     invalidate_cache()
 
+    # Mark spatial cache dirty for this PID
+    try:
+        from nexus.mind.session import mark_dirty
+        mark_dirty(pid)
+    except Exception:
+        pass
+
 
 # ---------------------------------------------------------------------------
 # Background thread

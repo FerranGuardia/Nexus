@@ -23,10 +23,12 @@ Under the hood, Nexus routes through accessibility APIs, AppleScript, keyboard/m
 
 ## What's Built
 
-**15,000+ LOC across 23 source files + 11 test files. 898 tests, all passing.**
+**15,000+ LOC across 25 source files + 14 test files. 980 tests, all passing.**
 **Skills system with 16 bundled skills, exposed as MCP resources.**
 **OCR fallback, system dialog detection, and dialog templates integrated into see().**
 **Merged do()+see() responses, keyboard shortcut preference, path navigation, and action bundles.**
+**Session state with spatial caching, action journal, and layout hash change detection.**
+**Hook pipeline with 7 built-in hooks for composable extensibility.**
 
 ### Perception (`see`)
 - macOS accessibility tree via AXUIElement (pyobjc)
@@ -95,7 +97,7 @@ Under the hood, Nexus routes through accessibility APIs, AppleScript, keyboard/m
 - JS execution and URL navigation
 
 ### Test Suite
-- **898 tests**: ~579 resolve + 43 phase3 + 55 smoke + 47 skills + 39 learn + 27 state + 26 observe + 36 system + 37 templates + 22 ocr + 14 capture
+- **980 tests**: ~579 resolve + 43 phase3 + 41 phase4 + 41 hooks + 55 smoke + 47 skills + 39 learn + 27 state + 26 observe + 36 system + 37 templates + 22 ocr + 14 capture
 - Unit tests mock all OS APIs — run anywhere, fast
 - Smoke tests exercise real code paths on macOS
 
@@ -117,8 +119,8 @@ VS Code hosts the MCP server, so it steals focus during actions. Mitigated with 
 1. ~~**More skills**~~ — ✅ 16 bundled skills
 2. ~~**See better**~~ — ✅ OCR fallback, system dialog detection, dialog templates
 3. ~~**Act smarter**~~ — ✅ merged responses, shortcut preference, path nav, bundles
-4. **Remember** — session state, spatial caching, action journal
-5. **Hook pipeline** — before/after hooks for composable extensibility
+4. ~~**Remember**~~ — ✅ session state, spatial caching, action journal
+5. ~~**Hook pipeline**~~ — ✅ 7 built-in hooks, composable extensibility
 6. **Perception plugins** — pluggable fallback stack (AX → OCR → templates → VLM)
 7. **Polish** — typo tolerance, smarter error recovery, CDP depth, multi-monitor
 8. **Long game** — workflow recording, navigation graphs, continual learning, skill marketplace

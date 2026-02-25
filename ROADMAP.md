@@ -10,10 +10,10 @@ The foundation is solid — three tools, 70+ intents, 726 tests, real desktop co
 
 ## Where We Are
 
-**v2.2 — Phases 1, 2 & 3 complete**
+**v2.4 — Phases 1, 2, 3, 4 & 5 complete**
 
 ```
-15,000+ LOC | 898 tests | 23 source files | 16 skill files
+15,000+ LOC | 980 tests | 25 source files | 16 skill files
 see/do/memory working via MCP | 75+ intent patterns
 Action verification | Self-improving label memory
 Observation mode | Control panel | Chrome CDP
@@ -22,6 +22,8 @@ OCR fallback (Apple Vision) | System dialog detection
 Dialog templates | Capture abstraction
 Merged do()+see() responses | Shortcut preference cache
 Path navigation | Action bundles (5 built-in)
+Session state (spatial cache, action journal, layout hashing)
+Hook pipeline (7 built-in hooks, composable extensibility)
 ```
 
 **What works well:**
@@ -38,13 +40,19 @@ Path navigation | Action bundles (5 built-in)
 - **[NEW] do() prefers keyboard shortcuts over tree walking (~50ms vs ~300ms)**
 - **[NEW] do("navigate X > Y") clicks through UI hierarchies in one call**
 - **[NEW] Action bundles: save as, find/replace, zoom, new doc, print**
+- **[NEW] Session state persists across MCP calls (spatial cache, action journal)**
+- **[NEW] Spatial cache (3s TTL) with layout hash change detection eliminates redundant tree walks**
+- **[NEW] Action journal gives proprioception — "what did I just do?" in every do() response**
+- **[NEW] Hook pipeline — register(event, fn, priority) makes all behaviors composable**
+- **[NEW] 7 built-in hooks replace hardcoded behaviors (OCR, spatial cache, learning, journal, dialogs)**
 
 **What still doesn't:**
 - ~~System dialogs are invisible~~ → now detected + OCR'd + classified
 - ~~Navigation takes 12x longer than a human~~ → shortcuts + merged responses cut round-trips
+- ~~No session state — each tool call starts from zero~~ → spatial cache + action journal
+- ~~Adding new behaviors requires editing core code~~ → hook pipeline makes everything composable
 - Some Electron apps return empty trees (Docker Desktop) → OCR fallback helps but coordinate clicking is still imprecise
 - see(app=) via MCP falls back to VS Code too often
-- No session state — each tool call starts from zero
 
 ---
 
@@ -214,67 +222,70 @@ Bundles are defined as functions in a new `nexus/act/bundles.py`, not as skills 
 
 ---
 
-## Phase 4: Remember (Session State and Spatial Cache)
+## Phase 4: Remember (Session State and Spatial Cache) ✅ COMPLETE
 
-**Timeline: 1 week. Effort: Medium. Impact: High.**
+**Completed Feb 25, 2026. 1 new module + 4 modified files + 41 tests.**
 
-Currently each MCP call is stateless. Nexus walks the tree from scratch, discovers elements from scratch, forgets everything between calls. This phase adds memory within a session.
+Session-level memory across MCP calls within a single server lifetime.
 
-### 4a. Session Object
+### 4a. Session Object (`nexus/mind/session.py`)
 
-```
-New file: nexus/mind/session.py
-- Session created on first MCP call, persists until server restart
-- Tracks: spatial cache, action journal, layout hashes, shortcut cache
-- spatial_cache: {app: {element_label: {zone, position, last_seen, ttl}}}
-- action_journal: last 50 actions with results (proprioception)
-- layout_hash: per-app hash of element roles+positions — detect structural changes
-```
+In-memory state: spatial cache, action journal, layout hashes, session metadata.
+Module-level dicts (same pattern as learn.py). No disk I/O, no persistence.
 
 ### 4b. Spatial Caching
 
-```
-In: nexus/sense/fusion.py
-- After tree walk: compute layout_hash, store elements in session
-- Before tree walk: if hash matches and age < 3s, return cached elements
-- Observation events mark affected zones as dirty
-- Eliminates ~50% of redundant tree walks in multi-step interactions
-```
+3-second TTL element cache layered above the 1-second tree cache.
+Layout hash (sorted role+label, MD5) detects structural changes.
+Observer events mark cache dirty via `mark_dirty(pid)`.
+`snap()` → `compact_state()` gets a free cache hit (same PID, same elements).
+Eliminates redundant tree walks in multi-step interactions.
 
 ### 4c. Action Journal in do() Response
 
-```
-In: nexus/server.py
-- Append every action to session journal
-- Include last 3-5 journal entries in do() response
-- Agent always knows: "2s ago I clicked File, 1s ago I clicked Save As"
-- No need to call see() just to remember what happened
-```
+50-entry deque of recent actions with timing, errors, and change summaries.
+Last 3 entries appended as `--- Recent ---` to every mutating `do()` response.
+Format: `"3s ago: click File -> OK (TextEdit)"` — ~150 chars for 3 entries.
+Gives the agent proprioception without a separate `see()` call.
 
 ---
 
-## Phase 5: Hook Pipeline (Extensibility Foundation)
+## Phase 5: Hook Pipeline (Extensibility Foundation) ✅ COMPLETE
 
-**Timeline: 1 week. Effort: Medium. Impact: Foundational.**
+**Completed Feb 25, 2026. 1 new module + 2 modified files + 41 tests.**
 
-Inspired by OpenClaw's 23-hook lifecycle. A lightweight hook system that lets each component influence the pipeline without coupling.
+Lightweight hook system that lets each component influence the pipeline without coupling. Each hook is a simple function registered with a priority. Fire sequentially, stop on `{"stop": True}`. No classes, no inheritance, no framework.
+
+### `nexus/hooks.py` — Registry + 7 Built-in Hooks
 
 ```
-New file: nexus/hooks.py
+Registry: register(event, fn, priority, name), fire(event, ctx), clear(), registered()
+Thread-safe, error-isolated (hooks never break the pipeline)
 
-Hooks:
-  before_see    → skip tree walk if cache fresh, load app skill
-  after_see     → trigger OCR if tree sparse, update spatial cache
-  before_do     → check shortcut cache, substitute learned labels
-  after_do      → update journal, learn from outcome, predict next state
-  on_error      → retry with OCR fallback, suggest alternatives
-  on_app_switch → pre-fetch tree, load app navigation skill
-  on_system_dialog → trigger OCR + template match + coordinate click
+Built-in hooks (migrated from inline code):
+  before_see:
+    spatial_cache_read  (pri 10) — check spatial cache, skip tree walk on hit
+  after_see:
+    spatial_cache_write (pri 10) — store elements in spatial cache
+    ocr_fallback        (pri 50) — run OCR when AX tree is sparse (<5 labeled)
+    system_dialog       (pri 60) — detect Gatekeeper/SecurityAgent dialogs
+    learning_hints      (pri 70) — show learned labels for current app
+  after_do:
+    learning_record     (pri 10) — record action for label correlation
+    journal_record      (pri 20) — record to session action journal
 ```
 
-Each hook is a simple function registered with a priority. Fire sequentially, stop on first `{"stop": True}` return. No classes, no inheritance, no framework — just a list of functions.
+### Modified files
+- `nexus/sense/fusion.py` — replaced inline spatial cache, OCR, system dialog, and learning hint blocks with `fire("before_see")` and `fire("after_see")` calls
+- `nexus/server.py` — replaced inline learning recording and journal recording with `fire("after_do")` call
 
-**Why this matters:** Every feature from Phases 2-4 can be wired as a hook. OCR fallback is an `after_see` hook. Shortcut preference is a `before_do` hook. Spatial caching is a `before_see` hook. The hook pipeline makes everything composable without touching core code.
+### Future events (defined, not yet wired)
+- `before_do` — shortcut preference, label substitution
+- `on_error` — retry with OCR fallback, suggest alternatives
+- `on_app_switch` — pre-fetch tree, load navigation skill
+- `on_system_dialog` — auto-handle dialogs
+
+**Why this matters:** Adding a new behavior is now ~15 lines (write function + register) instead of ~50 lines of core edits. Every Phase 2-4 behavior is a hook. New perception layers, error recovery strategies, and app-specific optimizations plug in without touching core code.
 
 ---
 

@@ -365,16 +365,16 @@ class TestBundledSkills:
         assert (BUNDLED_DIR / "notifications.md").exists()
 
     def test_list_skills_includes_all_bundled(self):
-        """list_skills() with real bundled dir finds all 16 skills."""
+        """list_skills() with real bundled dir finds all 17 skills."""
         result = skills.list_skills()
         ids = [s["id"] for s in result]
         expected = [
             "apple-shortcuts", "browser", "docker", "electron-apps",
             "email", "file-save-as", "finder", "github",
-            "keyboard-navigation", "notifications", "safari",
+            "keyboard-navigation", "mail-app", "notifications", "safari",
             "screenshot", "system-dialogs", "system-settings",
             "terminal", "vscode",
         ]
         for skill_id in expected:
             assert skill_id in ids, f"Missing bundled skill: {skill_id}"
-        assert len(result) == 16
+        assert len(result) == 17

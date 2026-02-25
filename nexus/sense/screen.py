@@ -69,10 +69,10 @@ def _cg_to_pil(cg_image):
     return img
 
 
-def screenshot_to_base64(img, max_width=1280, quality=70):
-    """Compress a PIL Image and return base64 PNG.
+def screenshot_to_base64(img, max_width=800, quality=60):
+    """Compress a PIL Image and return base64 JPEG.
 
-    Resizes if wider than max_width to keep MCP payloads reasonable.
+    Resizes to max_width (preserving aspect ratio) for MCP payloads.
     """
     if img is None:
         return None

@@ -3,11 +3,19 @@
 Fallback layer when accessibility actions aren't available.
 """
 
+import subprocess
+import time
+
 import pyautogui
 
 # Safety: don't let pyautogui throw on edge-of-screen moves
 pyautogui.FAILSAFE = True
 pyautogui.PAUSE = 0.05  # Small pause between actions
+
+# Strings longer than this use clipboard paste instead of char-by-char.
+# Prevents rapid beeping when field isn't focused, and is faster for
+# long strings like URLs, server addresses, email addresses.
+_PASTE_THRESHOLD = 8
 
 
 def click(x, y, button="left", clicks=1):
@@ -35,9 +43,59 @@ def right_click(x, y):
 
 
 def type_text(text, interval=0.02):
-    """Type text using keyboard."""
+    """Type text using keyboard.
+
+    Short strings (<= 8 chars): character-by-character via pyautogui.
+    Long strings (> 8 chars): clipboard paste via cmd+v.
+    This prevents rapid beeping if the field isn't focused, and is
+    faster for URLs, server addresses, etc.
+    """
+    if len(text) > _PASTE_THRESHOLD:
+        return paste_text(text)
     pyautogui.write(text, interval=interval)
     return {"ok": True, "action": "type", "text": text}
+
+
+def paste_text(text):
+    """Type text atomically via clipboard paste (cmd+v).
+
+    One keypress instead of N — if field isn't focused, one beep
+    instead of 26. Saves and restores the original clipboard.
+    """
+    # Save current clipboard
+    old_clip = None
+    try:
+        result = subprocess.run(
+            ["pbpaste"], capture_output=True, timeout=2,
+        )
+        old_clip = result.stdout  # bytes — preserves any encoding
+    except Exception:
+        pass
+
+    # Set clipboard to our text
+    try:
+        subprocess.run(
+            ["pbcopy"], input=text.encode("utf-8"), timeout=2,
+        )
+    except Exception:
+        # Clipboard failed — fall back to char-by-char
+        pyautogui.write(text, interval=0.02)
+        return {"ok": True, "action": "type", "text": text}
+
+    # Paste
+    pyautogui.hotkey("command", "v")
+
+    # Brief pause for paste to register, then restore clipboard
+    time.sleep(0.1)
+    if old_clip is not None:
+        try:
+            subprocess.run(
+                ["pbcopy"], input=old_clip, timeout=2,
+            )
+        except Exception:
+            pass
+
+    return {"ok": True, "action": "paste", "text": text}
 
 
 def hotkey(*keys):

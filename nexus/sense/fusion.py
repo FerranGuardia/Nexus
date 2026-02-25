@@ -6,6 +6,7 @@ snapshot of the computer.
 """
 
 from nexus.sense import access, screen
+from nexus.hooks import fire
 
 # Snapshot storage for diff mode
 _last_snapshot = None
@@ -114,6 +115,8 @@ def see(app=None, query=None, screenshot=False, menus=False, diff=False, content
     result_parts.append("")
     tables = []
     lists = []
+    fetch_limit = max(max_elements * 2, 150)
+    cached_elements = None
     if query:
         elements = access.find_elements(query, pid)
         result_parts.append(f'Search "{query}" ({len(elements)} matches):')
@@ -122,11 +125,23 @@ def see(app=None, query=None, screenshot=False, menus=False, diff=False, content
             result_parts.append(f"  {_format_element(el)}")
     else:
         # Single-pass: fetch elements, tables, and lists in one tree walk
-        fetch_limit = max(max_elements * 2, 150)
-        full = access.full_describe(pid, max_elements=fetch_limit)
-        elements = full["elements"]
-        tables = full["tables"]
-        lists = full["lists"]
+
+        # Hook: before_see — spatial cache read, app skill loading
+        before_ctx = fire("before_see", {
+            "pid": pid, "query": query, "app_info": app_info,
+            "fetch_limit": fetch_limit,
+        })
+        cached_elements = before_ctx.get("cached_elements")
+
+        if cached_elements is not None:
+            elements = cached_elements
+            tables = []  # Can't cache (contain AX refs)
+            lists = []
+        else:
+            full = access.full_describe(pid, max_elements=fetch_limit)
+            elements = full["elements"]
+            tables = full["tables"]
+            lists = full["lists"]
 
         # Filter out noise (unlabeled static text/images, wrapper groups)
         clean = [el for el in elements if not _is_noise_element(el)]
@@ -143,25 +158,13 @@ def see(app=None, query=None, screenshot=False, menus=False, diff=False, content
     if not elements:
         result_parts.append("  (no elements found)")
 
-    # OCR fallback — when AX tree returns too few labeled elements
-    ocr_elements = []
-    labeled_count = sum(1 for el in elements if el.get("label"))
-    if labeled_count < 5 and not query:
-        ocr_elements = _ocr_fallback(pid, app_info)
-        if ocr_elements:
-            result_parts.append("")
-            result_parts.append(f"OCR Fallback ({len(ocr_elements)} text regions):")
-            for el in ocr_elements[:30]:
-                conf = el.get("confidence", 0)
-                result_parts.append(f'  [text (OCR)] "{el["label"]}" @ {el["pos"][0]},{el["pos"][1]} ({conf:.0%})')
-            if len(ocr_elements) > 30:
-                result_parts.append(f"  ... and {len(ocr_elements) - 30} more")
-
-    # System dialog detection — check for Gatekeeper, SecurityAgent, etc.
-    system_dialog_text = _detect_system_dialogs()
-    if system_dialog_text:
-        result_parts.append("")
-        result_parts.append(system_dialog_text)
+    # Hook: after_see — OCR fallback, system dialog detection, spatial cache write
+    fire("after_see", {
+        "pid": pid, "elements": elements, "app_info": app_info,
+        "result_parts": result_parts, "query": query,
+        "fetch_limit": fetch_limit,
+        "from_cache": cached_elements is not None,
+    })
 
     # Structured tables — from the single-pass walk (or separate for query mode)
     if not tables and not query:
@@ -201,19 +204,6 @@ def see(app=None, query=None, screenshot=False, menus=False, diff=False, content
                 result_parts.append(f'  [{item["role"]}]{label_part}:')
                 for line in preview.split("\n"):
                     result_parts.append(f"    {line}")
-
-    # Learning hints — show what the system has learned about this app
-    if app_info:
-        try:
-            from nexus.mind.learn import hints_for_app
-            hints = hints_for_app(app_info.get("name", ""))
-            if hints:
-                result_parts.append("")
-                result_parts.append("Learned:")
-                for line in hints.split("\n"):
-                    result_parts.append(f"  {line}")
-        except Exception:
-            pass
 
     # CDP web content — enrich when Chrome is active
     if app_info and _is_browser(app_info.get("name", "")):
@@ -431,8 +421,21 @@ def compact_state(pid=None, max_elements=15):
     if focus:
         parts.append(f"Focus: {_format_element(focus)}")
 
-    # Key interactive elements (compact — uses cached tree from snap)
-    elements = access.describe_app(pid)
+    # Key interactive elements (compact — tries spatial cache, falls back to tree)
+    try:
+        from nexus.mind.session import spatial_get, spatial_put
+        cached, _ = spatial_get(pid)
+    except Exception:
+        cached = None
+
+    if cached is not None:
+        elements = cached
+    else:
+        elements = access.describe_app(pid)
+        try:
+            spatial_put(pid, elements)
+        except Exception:
+            pass
     if elements:
         clean = [el for el in elements if not _is_noise_element(el)]
         clean = _suppress_wrapper_groups(clean)
@@ -471,6 +474,13 @@ def snap(pid=None):
     focus = access.focused_element(pid)
     elements = access.describe_app(pid)
     wins = access.windows()
+
+    # Populate spatial cache so compact_state() gets a free hit
+    try:
+        from nexus.mind.session import spatial_put
+        spatial_put(pid, elements)
+    except Exception:
+        pass
 
     return _snapshot(elements, wins, focus, app_info)
 

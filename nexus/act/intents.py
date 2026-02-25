@@ -526,6 +526,11 @@ def _handle_path_nav(path, pid=None):
             time.sleep(0.3)
             from nexus.sense.access import invalidate_cache
             invalidate_cache()
+            try:
+                from nexus.mind.session import mark_dirty
+                mark_dirty()  # All PIDs — layout is changing
+            except Exception:
+                pass
 
     return {
         "ok": True,

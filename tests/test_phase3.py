@@ -20,6 +20,14 @@ sys.path.insert(0, "/Users/ferran/repos/Nexus")
 class TestCompactState:
     """Test compact_state() returns useful post-action state."""
 
+    def setup_method(self):
+        """Clear spatial cache between tests."""
+        try:
+            from nexus.mind.session import reset
+            reset()
+        except Exception:
+            pass
+
     @patch("nexus.sense.fusion.access")
     def test_compact_state_basic(self, mock_access):
         """Returns app, focus, and elements."""
