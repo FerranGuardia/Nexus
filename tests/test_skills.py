@@ -316,11 +316,65 @@ class TestBundledSkills:
             assert "name" in meta, f"{md.name} missing 'name' in frontmatter"
             assert "description" in meta, f"{md.name} missing 'description' in frontmatter"
 
-    def test_list_skills_includes_bundled(self):
-        """list_skills() with real bundled dir finds all 4 skills."""
+    def test_safari_skill_bundled(self):
+        from nexus.mind.skills import BUNDLED_DIR
+        assert (BUNDLED_DIR / "safari.md").exists()
+
+    def test_vscode_skill_bundled(self):
+        from nexus.mind.skills import BUNDLED_DIR
+        assert (BUNDLED_DIR / "vscode.md").exists()
+
+    def test_finder_skill_bundled(self):
+        from nexus.mind.skills import BUNDLED_DIR
+        assert (BUNDLED_DIR / "finder.md").exists()
+
+    def test_system_settings_skill_bundled(self):
+        from nexus.mind.skills import BUNDLED_DIR
+        assert (BUNDLED_DIR / "system-settings.md").exists()
+
+    def test_terminal_skill_bundled(self):
+        from nexus.mind.skills import BUNDLED_DIR
+        assert (BUNDLED_DIR / "terminal.md").exists()
+
+    def test_docker_skill_bundled(self):
+        from nexus.mind.skills import BUNDLED_DIR
+        assert (BUNDLED_DIR / "docker.md").exists()
+
+    def test_system_dialogs_skill_bundled(self):
+        from nexus.mind.skills import BUNDLED_DIR
+        assert (BUNDLED_DIR / "system-dialogs.md").exists()
+
+    def test_electron_apps_skill_bundled(self):
+        from nexus.mind.skills import BUNDLED_DIR
+        assert (BUNDLED_DIR / "electron-apps.md").exists()
+
+    def test_keyboard_navigation_skill_bundled(self):
+        from nexus.mind.skills import BUNDLED_DIR
+        assert (BUNDLED_DIR / "keyboard-navigation.md").exists()
+
+    def test_file_save_as_skill_bundled(self):
+        from nexus.mind.skills import BUNDLED_DIR
+        assert (BUNDLED_DIR / "file-save-as.md").exists()
+
+    def test_screenshot_skill_bundled(self):
+        from nexus.mind.skills import BUNDLED_DIR
+        assert (BUNDLED_DIR / "screenshot.md").exists()
+
+    def test_notifications_skill_bundled(self):
+        from nexus.mind.skills import BUNDLED_DIR
+        assert (BUNDLED_DIR / "notifications.md").exists()
+
+    def test_list_skills_includes_all_bundled(self):
+        """list_skills() with real bundled dir finds all 16 skills."""
         result = skills.list_skills()
         ids = [s["id"] for s in result]
-        assert "github" in ids
-        assert "email" in ids
-        assert "apple-shortcuts" in ids
-        assert "browser" in ids
+        expected = [
+            "apple-shortcuts", "browser", "docker", "electron-apps",
+            "email", "file-save-as", "finder", "github",
+            "keyboard-navigation", "notifications", "safari",
+            "screenshot", "system-dialogs", "system-settings",
+            "terminal", "vscode",
+        ]
+        for skill_id in expected:
+            assert skill_id in ids, f"Missing bundled skill: {skill_id}"
+        assert len(result) == 16
