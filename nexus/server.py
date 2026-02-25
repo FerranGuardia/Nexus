@@ -293,6 +293,17 @@ def do(action: str, app: str | None = None) -> str:
         if changes:
             parts.append("")
             parts.append(changes)
+        # Post-action state — saves the agent a see() call
+        if not is_getter and before is not None:
+            try:
+                from nexus.sense.fusion import compact_state
+                state_text = compact_state(pid=pid)
+                if state_text:
+                    parts.append("")
+                    parts.append("--- State ---")
+                    parts.append(state_text)
+            except Exception:
+                pass  # State must never break the action response
         # Restore focus to target app (VS Code steals it back on MCP response)
         if focus_app:
             _schedule_focus_restore(focus_app)

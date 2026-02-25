@@ -23,7 +23,10 @@ Under the hood, Nexus routes through accessibility APIs, AppleScript, keyboard/m
 
 ## What's Built
 
-**11,500+ LOC across 13 source files + 4 test files. 699 tests, all passing.**
+**15,000+ LOC across 23 source files + 11 test files. 898 tests, all passing.**
+**Skills system with 16 bundled skills, exposed as MCP resources.**
+**OCR fallback, system dialog detection, and dialog templates integrated into see().**
+**Merged do()+see() responses, keyboard shortcut preference, path navigation, and action bundles.**
 
 ### Perception (`see`)
 - macOS accessibility tree via AXUIElement (pyobjc)
@@ -45,7 +48,7 @@ Under the hood, Nexus routes through accessibility APIs, AppleScript, keyboard/m
 
 ### Action (`do`)
 - Intent-based: `do("click Save")`, not `click_at(340, 220)`
-- **70+ intent patterns** — click, type, press, scroll, fill, wait, navigate, drag, hover, and more
+- **75+ intent patterns** — click, type, press, scroll, fill, wait, navigate, drag, hover, bundles, and more
 - Verb synonym expansion: tap/hit/select → click, enter/input → type, visit/browse → navigate
 - Action chains: `do("open Safari; navigate google.com; wait 1s")` — semicolon-separated, fail-fast
 - Ordinal references: `do("click the 2nd button")`, `do("last checkbox")`, `do("link 3")`
@@ -68,8 +71,11 @@ Under the hood, Nexus routes through accessibility APIs, AppleScript, keyboard/m
 - Observation: `do("observe start/stop/status/clear")`
 - Clipboard, Safari URL/tabs, Finder selection, notifications, text-to-speech
 - **Error recovery**: fuzzy "Did you mean?" suggestions + role counts
-- **Action verification**: auto-snapshots before/after, reports what changed
+- **Action verification**: auto-snapshots before/after, reports what changed + post-action state
 - **Self-improving memory**: auto-learns label translations (e.g., "Save" → "Guardar") from fail→succeed correlation
+- **Keyboard shortcut preference**: auto-caches menu shortcuts, uses them instead of tree walking (~50ms vs ~300ms)
+- **Path navigation**: `do("navigate General > About")` — clicks through UI hierarchies in one call
+- **Action bundles**: `do("save as draft.md")`, `do("find and replace foo with bar")`, `do("zoom in")`, `do("new document")`, `do("print")`
 
 ### Memory (`memory`)
 - Persistent JSON store at `~/.nexus/memory.json`
@@ -89,7 +95,7 @@ Under the hood, Nexus routes through accessibility APIs, AppleScript, keyboard/m
 - JS execution and URL navigation
 
 ### Test Suite
-- **699 tests**: ~579 unit tests + ~65 integration smoke tests + 26 observe + 39 learning
+- **898 tests**: ~579 resolve + 43 phase3 + 55 smoke + 47 skills + 39 learn + 27 state + 26 observe + 36 system + 37 templates + 22 ocr + 14 capture
 - Unit tests mock all OS APIs — run anywhere, fast
 - Smoke tests exercise real code paths on macOS
 
@@ -106,19 +112,16 @@ VS Code hosts the MCP server, so it steals focus during actions. Mitigated with 
 
 ## What's Left to Build
 
-### CDP Depth
-- Network request interception (watch API calls)
-- Console log capture (catch JS errors)
+**See `ROADMAP.md` for the full phased plan.** Summary of the 8 phases:
 
-### Resilience
-- Typo tolerance in verb parsing ("clck Save" → "click Save")
-- Auto-retry on "wrong app focused" detection
-- Auto-detect and restart Chrome with debugging port
-
-### Ambition
-- Multi-monitor support (`move window to display 2`)
-- Workflow recording — "watch what I do" → replay as action chain
-- Cross-platform (Linux via AT-SPI, Windows via UIA) — the architecture is layered for it
+1. ~~**More skills**~~ — ✅ 16 bundled skills
+2. ~~**See better**~~ — ✅ OCR fallback, system dialog detection, dialog templates
+3. ~~**Act smarter**~~ — ✅ merged responses, shortcut preference, path nav, bundles
+4. **Remember** — session state, spatial caching, action journal
+5. **Hook pipeline** — before/after hooks for composable extensibility
+6. **Perception plugins** — pluggable fallback stack (AX → OCR → templates → VLM)
+7. **Polish** — typo tolerance, smarter error recovery, CDP depth, multi-monitor
+8. **Long game** — workflow recording, navigation graphs, continual learning, skill marketplace
 
 ## Design Principles (Non-Negotiable)
 
@@ -134,7 +137,10 @@ VS Code hosts the MCP server, so it steals focus during actions. Mitigated with 
 If you're an AI continuing this work, here's what matters:
 
 - Read `CLAUDE.md` for the architecture and how to run things
-- The codebase is ~11,500 LOC across 17 files. Start with `server.py` → `fusion.py` → `resolve.py`
+- Read `ROADMAP.md` for the phased implementation plan
+- Read `~/Desktop/research/nexus/` for 12 deep research documents (limitations, optimization, competitive landscape)
+- Read `FIELD_TEST_DOCKER_INSTALL.md` to see exactly where Nexus fails today
+- The codebase is ~12,000 LOC across 20 files. Start with `server.py` → `fusion.py` → `resolve.py`
 - Test with real apps: Safari has the richest accessibility tree, Finder is good too
 - VS Code (Electron) needs `AXManualAccessibility` — Nexus handles this automatically
 - macOS accessibility permission must be granted to the parent app (Terminal, VS Code, etc.)
@@ -142,4 +148,4 @@ If you're an AI continuing this work, here's what matters:
 - Always run tests: `source .venv/bin/activate && python -m pytest tests/ -q`
 - Quick test: `python -c "from nexus.sense.fusion import see; print(see()['text'])"`
 
-Read the "Known Issues" and "What's Left" sections — that's where the real work is.
+Read `ROADMAP.md` — that's where the real work is. And if you think this project is done, go try the Docker install test.
