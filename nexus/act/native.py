@@ -158,16 +158,36 @@ def set_value(name, value, pid=None):
 
 
 def launch_app(name):
-    """Launch an application by name via AppleScript."""
+    """Launch an application by name via AppleScript.
+
+    On macOS Sequoia, many apps launch without a window.
+    If no window appears after activation, sends Cmd+N to create one.
+    Returns the app's PID for use by callers (e.g. chain PID re-resolution).
+    """
     script = f'tell application "{name}" to activate'
     try:
         subprocess.run(
             ["osascript", "-e", script],
             capture_output=True, text=True, timeout=10,
         )
-        return {"ok": True, "action": "launch", "app": name}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+    # Resolve PID and check for windows
+    import time
+    time.sleep(0.5)
+    pid = _pid_for_app_name(name)
+
+    if pid:
+        app_ref = AXUIElementCreateApplication(pid)
+        windows = ax_attr(app_ref, "AXWindows")
+        if not windows or len(windows) == 0:
+            # No window — send Cmd+N to create one (macOS convention)
+            from nexus.act.input import hotkey
+            hotkey("command", "n")
+            time.sleep(0.3)
+
+    return {"ok": True, "action": "launch", "app": name, "pid": pid}
 
 
 def activate_window(app_name=None, title=None):

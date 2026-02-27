@@ -107,6 +107,37 @@ CREATE TABLE IF NOT EXISTS graph_edges (
     avg_elapsed REAL DEFAULT 0,
     last_used TEXT NOT NULL
 );
+
+-- Via routes (recorded input sequences — Phase 8b)
+CREATE TABLE IF NOT EXISTS via_routes (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    app TEXT,
+    created TEXT NOT NULL,
+    duration_ms REAL,
+    step_count INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS via_steps (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    route_id TEXT NOT NULL REFERENCES via_routes(id) ON DELETE CASCADE,
+    step_num INTEGER NOT NULL,
+    ts_offset_ms REAL NOT NULL,
+    event_type TEXT NOT NULL,
+    x INTEGER, y INTEGER,
+    rel_x REAL, rel_y REAL,
+    window_x INTEGER, window_y INTEGER,
+    window_w INTEGER, window_h INTEGER,
+    button TEXT,
+    key_code INTEGER,
+    key_char TEXT,
+    modifiers TEXT,
+    ax_role TEXT,
+    ax_label TEXT,
+    pid INTEGER,
+    app_name TEXT,
+    UNIQUE(route_id, step_num)
+);
 """
 
 
@@ -564,3 +595,98 @@ def all_edges():
     conn = _get_conn()
     rows = conn.execute("SELECT from_hash, to_hash, action, success_count FROM graph_edges").fetchall()
     return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Via CRUD
+# ---------------------------------------------------------------------------
+
+def via_route_create(id, name, app=None):
+    """Create a new Via route."""
+    conn = _get_conn()
+    now = datetime.now().isoformat()
+    with _lock:
+        conn.execute(
+            "INSERT INTO via_routes (id, name, app, created) VALUES (?, ?, ?, ?)",
+            (id, name, app, now),
+        )
+        conn.commit()
+
+
+def via_route_get(id):
+    """Get a Via route by ID. Returns dict or None."""
+    conn = _get_conn()
+    row = conn.execute("SELECT * FROM via_routes WHERE id = ?", (id,)).fetchone()
+    if row is None:
+        return None
+    return dict(row)
+
+
+def via_route_list():
+    """List all Via routes."""
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT * FROM via_routes ORDER BY created DESC"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def via_route_delete(id):
+    """Delete a Via route and its steps (cascade). Returns True if existed."""
+    conn = _get_conn()
+    with _lock:
+        cursor = conn.execute("DELETE FROM via_routes WHERE id = ?", (id,))
+        conn.commit()
+        return cursor.rowcount > 0
+
+
+def via_route_update(id, duration_ms=None, step_count=None):
+    """Update route metadata after recording stops."""
+    conn = _get_conn()
+    with _lock:
+        if duration_ms is not None:
+            conn.execute("UPDATE via_routes SET duration_ms=? WHERE id=?", (duration_ms, id))
+        if step_count is not None:
+            conn.execute("UPDATE via_routes SET step_count=? WHERE id=?", (step_count, id))
+        conn.commit()
+
+
+def via_step_insert(route_id, step_num, ts_offset_ms, event_type,
+                    x=None, y=None, rel_x=None, rel_y=None,
+                    window_x=None, window_y=None, window_w=None, window_h=None,
+                    button=None, key_code=None, key_char=None, modifiers=None,
+                    ax_role=None, ax_label=None, pid=None, app_name=None):
+    """Insert a Via step."""
+    conn = _get_conn()
+    mod_json = json.dumps(modifiers) if modifiers else None
+    with _lock:
+        conn.execute(
+            "INSERT INTO via_steps "
+            "(route_id, step_num, ts_offset_ms, event_type, "
+            " x, y, rel_x, rel_y, window_x, window_y, window_w, window_h, "
+            " button, key_code, key_char, modifiers, ax_role, ax_label, pid, app_name) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (route_id, step_num, ts_offset_ms, event_type,
+             x, y, rel_x, rel_y, window_x, window_y, window_w, window_h,
+             button, key_code, key_char, mod_json, ax_role, ax_label, pid, app_name),
+        )
+        conn.commit()
+
+
+def via_steps_for_route(route_id):
+    """Get all steps for a Via route, ordered by step_num."""
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT * FROM via_steps WHERE route_id = ? ORDER BY step_num",
+        (route_id,),
+    ).fetchall()
+    result = []
+    for r in rows:
+        d = dict(r)
+        if d.get("modifiers"):
+            try:
+                d["modifiers"] = json.loads(d["modifiers"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        result.append(d)
+    return result

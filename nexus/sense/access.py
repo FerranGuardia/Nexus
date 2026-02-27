@@ -2,19 +2,15 @@
 
 The eye of Nexus. Walks the accessibility tree of any app,
 returns structured data about every interactive element on screen.
+
+Uses pyax (MIT, maintained by Mozilla a11y) for Pythonic AXUIElement access.
+Importing pyax patches AXUIElementRef with dict-style attribute access,
+iteration over children, .actions, .perform_action(), .search_for(), etc.
 """
 
-from ApplicationServices import (
-    AXUIElementCreateSystemWide,
-    AXUIElementCreateApplication,
-    AXUIElementCopyAttributeValue,
-    AXUIElementCopyAttributeNames,
-    AXUIElementCopyActionNames,
-    AXUIElementPerformAction,
-    AXUIElementSetAttributeValue,
-    AXIsProcessTrusted,
-    kAXErrorSuccess,
-)
+import pyax  # patches AXUIElementRef at import time
+
+from ApplicationServices import AXIsProcessTrusted
 from AppKit import NSWorkspace
 from Quartz import (
     CGWindowListCopyWindowInfo,
@@ -145,19 +141,22 @@ def _ensure_electron_accessibility(pid):
     from CoreFoundation import kCFBooleanTrue
     import time
 
-    app_ref = AXUIElementCreateApplication(pid)
-    err = AXUIElementSetAttributeValue(app_ref, "AXManualAccessibility", kCFBooleanTrue)
-    if err == kAXErrorSuccess:
-        _ax_manual_enabled.add(pid)
-        # Chromium builds the tree asynchronously — wait for it
-        # Typical time: 1-2 seconds. We poll to return as soon as ready.
-        window = ax_attr(app_ref, "AXFocusedWindow") or ax_attr(app_ref, "AXMainWindow")
-        if window:
-            for _ in range(8):  # 8 x 250ms = 2s max
-                time.sleep(0.25)
-                children = ax_attr(window, "AXChildren")
-                if children and len(children) > 4:
-                    break  # Tree is populating
+    app_ref = pyax.get_application_from_pid(pid)
+    try:
+        app_ref["AXManualAccessibility"] = kCFBooleanTrue
+    except Exception:
+        return
+
+    _ax_manual_enabled.add(pid)
+    # Chromium builds the tree asynchronously — wait for it
+    # Typical time: 1-2 seconds. We poll to return as soon as ready.
+    window = ax_attr(app_ref, "AXFocusedWindow") or ax_attr(app_ref, "AXMainWindow")
+    if window:
+        for _ in range(8):  # 8 x 250ms = 2s max
+            time.sleep(0.25)
+            children = ax_attr(window, "AXChildren")
+            if children and len(children) > 4:
+                break  # Tree is populating
 
 
 # Roles worth showing to the AI — interactive or meaningful
@@ -172,6 +171,54 @@ INTERACTIVE_ROLES = {
     "AXSegmentedControl", "AXMenuBarItem",
 }
 
+# Map localized role descriptions to English for consistent output.
+# macOS returns these in the system locale; Electron apps return English.
+_LOCALE_MAP = {
+    # Spanish
+    "botón": "button",
+    "campo de texto": "text field",
+    "campo de texto seguro": "secure text field",
+    "área de texto": "text area",
+    "área de entrada de texto": "text entry area",
+    "ventana estándar": "standard window",
+    "casilla": "checkbox",
+    "casilla de verificación": "checkbox",
+    "botón de opción": "radio button",
+    "menú emergente": "pop up button",
+    "deslizador": "slider",
+    "enlace": "link",
+    "elemento de menú": "menu item",
+    "pestaña": "tab",
+    "imagen": "image",
+    "texto estático": "static text",
+    "grupo": "group",
+    "barra de herramientas": "toolbar",
+    "diálogo": "dialog",
+    "hoja": "sheet",
+    "tabla": "table",
+    "lista": "list",
+    "esquema": "outline",
+    "interruptor": "switch",
+    "selector de colores": "color well",
+    "triángulo desplegable": "disclosure triangle",
+    "incrementador": "incrementor",
+    "cuadro combinado": "combo box",
+    "barra de desplazamiento": "scroll bar",
+    "área de desplazamiento": "scroll area",
+    "grupo de pestañas": "tab group",
+    "grupo dividido": "split group",
+    "celda": "cell",
+    "fila": "row",
+    "columna": "column",
+    "barra lateral": "sidebar",
+}
+
+
+def _system_wide():
+    """Get the system-wide accessibility element."""
+    from ApplicationServices import AXUIElementCreateSystemWide
+    return AXUIElementCreateSystemWide()
+
 
 def is_trusted():
     """Check if accessibility permissions are granted."""
@@ -179,33 +226,29 @@ def is_trusted():
 
 
 def ax_attr(element, attr):
-    """Safely get an AX attribute. Returns None on any failure."""
+    """Safely get an AX attribute. Returns None on any failure.
+
+    With pyax imported, element[attr] works on any AXUIElementRef.
+    """
     try:
-        err, value = AXUIElementCopyAttributeValue(element, attr, None)
-        if err == kAXErrorSuccess:
-            return value
+        return element[attr]
     except Exception:
-        pass
-    return None
+        return None
 
 
 def ax_actions(element):
     """Get available actions for an element."""
     try:
-        err, actions = AXUIElementCopyActionNames(element, None)
-        if err == kAXErrorSuccess and actions:
-            return list(actions)
+        return element.actions
     except Exception:
-        pass
-    return []
+        return []
 
 
 def ax_perform(element, action):
     """Perform an action on an element (e.g. AXPress, AXConfirm)."""
     try:
-        from ApplicationServices import AXUIElementPerformAction
-        err = AXUIElementPerformAction(element, action)
-        return err == kAXErrorSuccess
+        element.perform_action(action)
+        return True
     except Exception:
         return False
 
@@ -213,46 +256,46 @@ def ax_perform(element, action):
 def ax_set(element, attr, value):
     """Set an attribute on an element (e.g. AXValue for text fields)."""
     try:
-        err = AXUIElementSetAttributeValue(element, attr, value)
-        return err == kAXErrorSuccess
+        element[attr] = value
+        return True
     except Exception:
         return False
 
 
 def _extract_point(value):
-    """Extract (x, y) from an AXValue position."""
+    """Extract (x, y) from an AXValue position.
+
+    pyax's AXValueRef mixin gives dict access: value["x"], value["y"].
+    Also handles raw CGPoint/NSPoint objects.
+    """
     if value is None:
         return None
     try:
-        # pyobjc may return a CGPoint or NSPoint directly
-        return (int(value.x), int(value.y))
-    except AttributeError:
+        return (int(value["x"]), int(value["y"]))
+    except (KeyError, TypeError):
         pass
     try:
-        # Or it might be wrapped in an AXValue
-        from Quartz import AXValueGetValue, kAXValueTypeCGPoint
-        ok, point = AXValueGetValue(value, kAXValueTypeCGPoint, None)
-        if ok:
-            return (int(point.x), int(point.y))
-    except Exception:
+        return (int(value.x), int(value.y))
+    except (AttributeError, TypeError):
         pass
     return None
 
 
 def _extract_size(value):
-    """Extract (w, h) from an AXValue size."""
+    """Extract (w, h) from an AXValue size.
+
+    pyax's AXValueRef mixin gives dict access: value["width"], value["height"].
+    Also handles raw CGSize/NSSize objects.
+    """
     if value is None:
         return None
     try:
-        return (int(value.width), int(value.height))
-    except AttributeError:
+        return (int(value["width"]), int(value["height"]))
+    except (KeyError, TypeError):
         pass
     try:
-        from Quartz import AXValueGetValue, kAXValueTypeCGSize
-        ok, size = AXValueGetValue(value, kAXValueTypeCGSize, None)
-        if ok:
-            return (int(size.width), int(size.height))
-    except Exception:
+        return (int(value.width), int(value.height))
+    except (AttributeError, TypeError):
         pass
     return None
 
@@ -397,7 +440,7 @@ def focused_element(pid=None):
     if _is_electron(bundle_id):
         _ensure_electron_accessibility(pid)
 
-    app_ref = AXUIElementCreateApplication(pid)
+    app_ref = pyax.get_application_from_pid(pid)
     el = ax_attr(app_ref, "AXFocusedUIElement")
     if not el:
         return None
@@ -405,21 +448,49 @@ def focused_element(pid=None):
     return _element_to_dict(el, focused=True)
 
 
-def _element_to_dict(el, focused=False, content=False):
-    """Convert an AX element to a clean dict."""
-    role = ax_attr(el, "AXRole") or ""
-    role_desc = ax_attr(el, "AXRoleDescription") or ""
-    title = ax_attr(el, "AXTitle") or ""
-    desc = ax_attr(el, "AXDescription") or ""
-    value = ax_attr(el, "AXValue")
-    enabled = ax_attr(el, "AXEnabled")
-    is_focused = ax_attr(el, "AXFocused")
+def element_at_position(x, y, pid=None):
+    """Hit-test: find the AX element at screen coordinates (x, y).
 
-    pos = _extract_point(ax_attr(el, "AXPosition"))
-    sz = _extract_size(ax_attr(el, "AXSize"))
+    If pid is given, queries the app directly (deeper results).
+    Otherwise queries the system-wide element.
+
+    Returns element dict {role, label, pos, size, _ax_role} or None.
+    """
+    ref = pyax.get_application_from_pid(pid) if pid else _system_wide()
+    el = pyax.get_element_at_position(ref, float(x), float(y))
+    if el is None:
+        return None
+    return _element_to_dict(el)
+
+
+def _element_to_dict(el, focused=False, content=False):
+    """Convert an AX element to a clean dict.
+
+    Uses pyax's get_multiple_attribute_values for a single bulk API call
+    instead of 9 separate ax_attr() round-trips.
+    """
+    try:
+        attrs = el.get_multiple_attribute_values(
+            "AXRole", "AXRoleDescription", "AXTitle", "AXDescription",
+            "AXValue", "AXEnabled", "AXFocused", "AXPosition", "AXSize",
+        )
+    except Exception:
+        attrs = {}
+
+    role = attrs.get("AXRole") or ""
+    role_desc = attrs.get("AXRoleDescription") or ""
+    title = attrs.get("AXTitle") or ""
+    desc = attrs.get("AXDescription") or ""
+    value = attrs.get("AXValue")
+    enabled = attrs.get("AXEnabled")
+    is_focused = attrs.get("AXFocused")
+
+    pos = _extract_point(attrs.get("AXPosition"))
+    sz = _extract_size(attrs.get("AXSize"))
 
     label = title or desc
     display_role = role_desc or role.replace("AX", "").lower()
+    display_role = _LOCALE_MAP.get(display_role, display_role)
 
     node = {"role": display_role, "label": label, "_ax_role": role}
 
@@ -497,15 +568,16 @@ def walk_tree(element, max_depth=8, depth=0, max_elements=150,
     if len(results) >= max_elements:
         return results
 
-    # Recurse
-    children = ax_attr(element, "AXChildren")
-    if children:
-        for child in children:
+    # Recurse — pyax makes AXUIElementRef iterable over children
+    try:
+        for child in element:
             results.extend(walk_tree(child, max_depth, depth + 1, max_elements,
                                      _tables=_tables, _lists=_lists,
                                      _group=current_group))
             if len(results) >= max_elements:
                 break
+    except Exception:
+        pass
 
     return results[:max_elements]
 
@@ -525,7 +597,7 @@ def _get_window(pid):
     if is_electron:
         _ensure_electron_accessibility(pid)
 
-    app_ref = AXUIElementCreateApplication(pid)
+    app_ref = pyax.get_application_from_pid(pid)
 
     window = ax_attr(app_ref, "AXFocusedWindow")
     if not window:
@@ -671,7 +743,7 @@ def read_content(pid=None, max_chars=5000):
         "AXScrollArea", "AXGroup",
     }
 
-    app_ref = AXUIElementCreateApplication(pid)
+    app_ref = pyax.get_application_from_pid(pid)
     window = ax_attr(app_ref, "AXFocusedWindow") or ax_attr(app_ref, "AXMainWindow")
     if not window:
         return []
@@ -693,6 +765,7 @@ def read_content(pid=None, max_chars=5000):
                 if text and len(text) > 2:  # Skip trivial content
                     title = ax_attr(element, "AXTitle") or ax_attr(element, "AXDescription") or ""
                     role_desc = ax_attr(element, "AXRoleDescription") or role.replace("AX", "").lower()
+                    role_desc = _LOCALE_MAP.get(role_desc, role_desc)
                     remaining = max_chars - total_chars
                     truncated = text[:remaining]
                     results.append({
@@ -704,12 +777,13 @@ def read_content(pid=None, max_chars=5000):
                     if total_chars >= max_chars:
                         return
 
-        children = ax_attr(element, "AXChildren")
-        if children:
-            for child in children:
+        try:
+            for child in element:
                 _extract_content(child, depth + 1)
                 if total_chars >= max_chars:
                     break
+        except Exception:
+            pass
 
     _extract_content(window)
     return results
@@ -734,12 +808,13 @@ def read_table(element):
 
     title = ax_attr(element, "AXTitle") or ax_attr(element, "AXDescription") or ""
 
-    # Try to get rows via AXRows (preferred) or AXChildren
+    # Try to get rows via AXRows (preferred) or iterate children
     rows_list = ax_attr(element, "AXRows") or []
     if not rows_list:
-        children = ax_attr(element, "AXChildren")
-        if children:
-            rows_list = [c for c in children if (ax_attr(c, "AXRole") or "") == "AXRow"]
+        try:
+            rows_list = [c for c in element if (ax_attr(c, "AXRole") or "") == "AXRow"]
+        except Exception:
+            rows_list = []
 
     if not rows_list:
         return None
@@ -748,9 +823,11 @@ def read_table(element):
     headers = []
     header_el = ax_attr(element, "AXHeader")
     if header_el:
-        header_cells = ax_attr(header_el, "AXChildren") or []
-        for cell in header_cells:
-            headers.append(_cell_text(cell))
+        try:
+            for cell in header_el:
+                headers.append(_cell_text(cell))
+        except Exception:
+            pass
 
     # Try AXColumns for header names if AXHeader didn't work
     if not headers:
@@ -764,10 +841,12 @@ def read_table(element):
     data_rows = []
     row_refs = []  # Keep AX refs for clicking rows later
     for row in rows_list:
-        cells = ax_attr(row, "AXChildren") or []
         row_data = []
-        for cell in cells:
-            row_data.append(_cell_text(cell))
+        try:
+            for cell in row:
+                row_data.append(_cell_text(cell))
+        except Exception:
+            pass
         if row_data:
             data_rows.append(row_data)
             row_refs.append(row)
@@ -812,7 +891,10 @@ def read_list(element):
 
     title = ax_attr(element, "AXTitle") or ax_attr(element, "AXDescription") or ""
 
-    children = ax_attr(element, "AXChildren") or []
+    try:
+        children = list(element)
+    except Exception:
+        children = []
     if not children:
         return None
 
@@ -824,14 +906,10 @@ def read_list(element):
         value = ax_attr(child, "AXValue")
         selected = ax_attr(child, "AXSelected")
 
-        # For rows in outlines, get the text from first child
+        # For rows in outlines, recursively extract text from children
+        # (Finder uses AXRow > AXCell > AXStaticText — needs deep walk)
         if not label and child_role == "AXRow":
-            row_children = ax_attr(child, "AXChildren") or []
-            for rc in row_children:
-                label = ax_attr(rc, "AXTitle") or ax_attr(rc, "AXValue") or ""
-                if label:
-                    label = str(label)
-                    break
+            label = _cell_text(child)
 
         # For generic children, try value
         if not label and value is not None:
@@ -869,7 +947,7 @@ def find_tables(pid=None):
             return []
         pid = app["pid"]
 
-    app_ref = AXUIElementCreateApplication(pid)
+    app_ref = pyax.get_application_from_pid(pid)
     window = ax_attr(app_ref, "AXFocusedWindow") or ax_attr(app_ref, "AXMainWindow")
     if not window:
         return []
@@ -890,7 +968,7 @@ def find_lists(pid=None):
             return []
         pid = app["pid"]
 
-    app_ref = AXUIElementCreateApplication(pid)
+    app_ref = pyax.get_application_from_pid(pid)
     window = ax_attr(app_ref, "AXFocusedWindow") or ax_attr(app_ref, "AXMainWindow")
     if not window:
         return []
@@ -902,7 +980,10 @@ def find_lists(pid=None):
 
 
 def _find_role(element, target_role, results, depth=0, max_depth=10):
-    """Recursively find elements with a specific role."""
+    """Recursively find elements with a specific role.
+
+    Uses pyax iteration for cleaner child traversal.
+    """
     if depth > max_depth:
         return
 
@@ -911,10 +992,11 @@ def _find_role(element, target_role, results, depth=0, max_depth=10):
         results.append(element)
         return  # Don't recurse into tables/lists themselves
 
-    children = ax_attr(element, "AXChildren")
-    if children:
-        for child in children:
+    try:
+        for child in element:
             _find_role(child, target_role, results, depth + 1, max_depth)
+    except Exception:
+        pass
 
 
 def _cell_text(cell):
@@ -935,12 +1017,13 @@ def _cell_text(cell):
         return str(desc).strip()
 
     # Recurse into children (cells often wrap content in static text)
-    children = ax_attr(cell, "AXChildren")
-    if children:
-        for child in children:
+    try:
+        for child in cell:
             text = _cell_text(child)
             if text:
                 return text
+    except Exception:
+        pass
 
     return ""
 
@@ -953,7 +1036,7 @@ def window_title(pid=None):
             return ""
         pid = app["pid"]
 
-    app_ref = AXUIElementCreateApplication(pid)
+    app_ref = pyax.get_application_from_pid(pid)
     window = ax_attr(app_ref, "AXFocusedWindow") or ax_attr(app_ref, "AXMainWindow")
     if window:
         return ax_attr(window, "AXTitle") or ""
@@ -962,7 +1045,11 @@ def window_title(pid=None):
 
 def app_ref_for_pid(pid):
     """Get AXUIElement ref for an app by PID."""
-    return AXUIElementCreateApplication(pid)
+    return pyax.get_application_from_pid(pid)
+
+
+# Backward-compatible alias — native.py and others import this name
+AXUIElementCreateApplication = pyax.get_application_from_pid
 
 
 def _bundle_id_for_pid(pid, app_info=None):
@@ -988,7 +1075,7 @@ def menu_bar(pid=None):
             return []
         pid = app["pid"]
 
-    app_ref = AXUIElementCreateApplication(pid)
+    app_ref = pyax.get_application_from_pid(pid)
     mb = ax_attr(app_ref, "AXMenuBar")
     if not mb:
         return []
@@ -1089,7 +1176,7 @@ def window_bounds_ax(pid=None):
             return None
         pid = app["pid"]
 
-    app_ref = AXUIElementCreateApplication(pid)
+    app_ref = pyax.get_application_from_pid(pid)
     window = ax_attr(app_ref, "AXFocusedWindow") or ax_attr(app_ref, "AXMainWindow")
     if not window:
         return None

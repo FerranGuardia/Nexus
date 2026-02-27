@@ -165,18 +165,21 @@ class TestDebounce:
 # ===========================================================================
 
 
-class TestObserverLifecycle:
-    """Observer creation, registration, and cleanup (mocked AX/CF)."""
+def _mock_observer():
+    """Create a mock observer with pyax mixin methods."""
+    obs = MagicMock()
+    obs.add_notifications = MagicMock()
+    obs.remove_notifications = MagicMock()
+    return obs
 
-    @patch("nexus.sense.observe.CFRunLoopWakeUp")
-    @patch("nexus.sense.observe.CFRunLoopAddSource")
-    @patch("nexus.sense.observe.AXObserverGetRunLoopSource", return_value=MagicMock())
-    @patch("nexus.sense.observe.AXObserverAddNotification")
-    @patch("nexus.sense.observe.AXUIElementCreateApplication", return_value=MagicMock())
-    @patch("nexus.sense.observe.AXObserverCreate", return_value=(0, MagicMock()))
-    def test_start_observing_success(self, mock_create, mock_app, mock_add, mock_source, mock_cf_add, mock_wake):
+
+class TestObserverLifecycle:
+    """Observer creation, registration, and cleanup (mocked pyax/CF)."""
+
+    @patch("nexus.sense.observe.pyax.create_observer")
+    def test_start_observing_success(self, mock_create):
+        mock_create.return_value = _mock_observer()
         from nexus.sense import observe
-        # Simulate thread already running
         observe._runloop = MagicMock()
         observe._thread = MagicMock(is_alive=lambda: True)
 
@@ -187,13 +190,9 @@ class TestObserverLifecycle:
         assert result["notifications"] == len(observe._NOTIFICATIONS)
         assert observe.is_observing(42)
 
-    @patch("nexus.sense.observe.CFRunLoopWakeUp")
-    @patch("nexus.sense.observe.CFRunLoopAddSource")
-    @patch("nexus.sense.observe.AXObserverGetRunLoopSource", return_value=MagicMock())
-    @patch("nexus.sense.observe.AXObserverAddNotification")
-    @patch("nexus.sense.observe.AXUIElementCreateApplication", return_value=MagicMock())
-    @patch("nexus.sense.observe.AXObserverCreate", return_value=(0, MagicMock()))
-    def test_start_already_observing(self, mock_create, mock_app, mock_add, mock_source, mock_cf_add, mock_wake):
+    @patch("nexus.sense.observe.pyax.create_observer")
+    def test_start_already_observing(self, mock_create):
+        mock_create.return_value = _mock_observer()
         from nexus.sense import observe
         observe._runloop = MagicMock()
         observe._thread = MagicMock(is_alive=lambda: True)
@@ -203,7 +202,7 @@ class TestObserverLifecycle:
         assert result["ok"] is True
         assert result.get("already") is True
 
-    @patch("nexus.sense.observe.AXObserverCreate", return_value=(-25201, None))
+    @patch("nexus.sense.observe.pyax.create_observer", side_effect=Exception("AX error"))
     def test_start_observing_ax_error(self, mock_create):
         from nexus.sense import observe
         observe._runloop = MagicMock()
@@ -216,7 +215,6 @@ class TestObserverLifecycle:
     def test_start_observing_no_thread(self):
         """Returns error if the observer thread can't start."""
         from nexus.sense import observe
-        # _runloop stays None (thread didn't start)
         with patch.object(observe, "_ensure_thread"):
             result = observe.start_observing(42, "Safari")
             assert result["ok"] is False
@@ -224,14 +222,10 @@ class TestObserverLifecycle:
 
     @patch("nexus.sense.observe.CFRunLoopWakeUp")
     @patch("nexus.sense.observe.CFRunLoopRemoveSource")
-    @patch("nexus.sense.observe.AXObserverRemoveNotification")
-    @patch("nexus.sense.observe.CFRunLoopAddSource")
     @patch("nexus.sense.observe.AXObserverGetRunLoopSource", return_value=MagicMock())
-    @patch("nexus.sense.observe.AXObserverAddNotification")
-    @patch("nexus.sense.observe.AXUIElementCreateApplication", return_value=MagicMock())
-    @patch("nexus.sense.observe.AXObserverCreate", return_value=(0, MagicMock()))
-    def test_stop_observing_specific_pid(self, mock_create, mock_app, mock_add, mock_source,
-                                          mock_cf_add, mock_rm_notif, mock_cf_rm, mock_wake):
+    @patch("nexus.sense.observe.pyax.create_observer")
+    def test_stop_observing_specific_pid(self, mock_create, mock_source, mock_cf_rm, mock_wake):
+        mock_create.return_value = _mock_observer()
         from nexus.sense import observe
         observe._runloop = MagicMock()
         observe._thread = MagicMock(is_alive=lambda: True)
@@ -247,14 +241,10 @@ class TestObserverLifecycle:
 
     @patch("nexus.sense.observe.CFRunLoopWakeUp")
     @patch("nexus.sense.observe.CFRunLoopRemoveSource")
-    @patch("nexus.sense.observe.AXObserverRemoveNotification")
-    @patch("nexus.sense.observe.CFRunLoopAddSource")
     @patch("nexus.sense.observe.AXObserverGetRunLoopSource", return_value=MagicMock())
-    @patch("nexus.sense.observe.AXObserverAddNotification")
-    @patch("nexus.sense.observe.AXUIElementCreateApplication", return_value=MagicMock())
-    @patch("nexus.sense.observe.AXObserverCreate", return_value=(0, MagicMock()))
-    def test_stop_all(self, mock_create, mock_app, mock_add, mock_source,
-                      mock_cf_add, mock_rm_notif, mock_cf_rm, mock_wake):
+    @patch("nexus.sense.observe.pyax.create_observer")
+    def test_stop_all(self, mock_create, mock_source, mock_cf_rm, mock_wake):
+        mock_create.return_value = _mock_observer()
         from nexus.sense import observe
         observe._runloop = MagicMock()
         observe._thread = MagicMock(is_alive=lambda: True)
@@ -262,7 +252,7 @@ class TestObserverLifecycle:
         observe.start_observing(42, "Safari")
         observe.start_observing(99, "Chrome")
 
-        result = observe.stop_observing()  # all
+        result = observe.stop_observing()
         assert result["ok"] is True
         assert len(result["stopped"]) == 2
         assert not observe.is_observing()
@@ -279,13 +269,9 @@ class TestObserverLifecycle:
         assert s["observing"] == []
         assert s["buffered"] == 0
 
-    @patch("nexus.sense.observe.CFRunLoopWakeUp")
-    @patch("nexus.sense.observe.CFRunLoopAddSource")
-    @patch("nexus.sense.observe.AXObserverGetRunLoopSource", return_value=MagicMock())
-    @patch("nexus.sense.observe.AXObserverAddNotification")
-    @patch("nexus.sense.observe.AXUIElementCreateApplication", return_value=MagicMock())
-    @patch("nexus.sense.observe.AXObserverCreate", return_value=(0, MagicMock()))
-    def test_status_with_observer(self, mock_create, mock_app, mock_add, mock_source, mock_cf_add, mock_wake):
+    @patch("nexus.sense.observe.pyax.create_observer")
+    def test_status_with_observer(self, mock_create):
+        mock_create.return_value = _mock_observer()
         from nexus.sense import observe
         observe._runloop = MagicMock()
         observe._thread = MagicMock(is_alive=lambda: True)
@@ -308,14 +294,10 @@ class TestStaleCleanup:
 
     @patch("nexus.sense.observe.CFRunLoopWakeUp")
     @patch("nexus.sense.observe.CFRunLoopRemoveSource")
-    @patch("nexus.sense.observe.AXObserverRemoveNotification")
-    @patch("nexus.sense.observe.CFRunLoopAddSource")
     @patch("nexus.sense.observe.AXObserverGetRunLoopSource", return_value=MagicMock())
-    @patch("nexus.sense.observe.AXObserverAddNotification")
-    @patch("nexus.sense.observe.AXUIElementCreateApplication", return_value=MagicMock())
-    @patch("nexus.sense.observe.AXObserverCreate", return_value=(0, MagicMock()))
-    def test_dead_pid_removed_on_drain(self, mock_create, mock_app, mock_add, mock_source,
-                                        mock_cf_add, mock_rm_notif, mock_cf_rm, mock_wake):
+    @patch("nexus.sense.observe.pyax.create_observer")
+    def test_dead_pid_removed_on_drain(self, mock_create, mock_source, mock_cf_rm, mock_wake):
+        mock_create.return_value = _mock_observer()
         from nexus.sense import observe
         observe._runloop = MagicMock()
         observe._thread = MagicMock(is_alive=lambda: True)

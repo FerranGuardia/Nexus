@@ -4,6 +4,8 @@ Runs AXObservers on a background CFRunLoop thread to capture macOS
 accessibility events (focus changes, new windows, value updates, etc.)
 without polling. Events are debounced, buffered, and drained by see().
 
+Uses pyax for observer creation and notification management.
+
 Usage:
     start_observing(pid, app_name)  — begin watching an app
     stop_observing(pid)             — stop watching (or all if pid=None)
@@ -13,23 +15,15 @@ Usage:
 """
 
 import os
-import objc
 import threading
 import time
 from collections import deque
 
-from ApplicationServices import (
-    AXObserverCreate,
-    AXObserverAddNotification,
-    AXObserverRemoveNotification,
-    AXObserverGetRunLoopSource,
-    AXUIElementCreateApplication,
-)
+import pyax
+from ApplicationServices import AXObserverGetRunLoopSource
 from CoreFoundation import (
     CFRunLoopGetCurrent,
     CFRunLoopRunInMode,
-    CFRunLoopStop,
-    CFRunLoopAddSource,
     CFRunLoopRemoveSource,
     CFRunLoopWakeUp,
     kCFRunLoopDefaultMode,
@@ -42,6 +36,7 @@ from nexus.sense.access import ax_attr, invalidate_cache
 # Monitored notifications (registered per observed app)
 # ---------------------------------------------------------------------------
 
+# Core notifications — always watched (pyax.EVENTS has the full 136-item list)
 _NOTIFICATIONS = [
     "AXFocusedUIElementChanged",
     "AXWindowCreated",
@@ -49,6 +44,12 @@ _NOTIFICATIONS = [
     "AXValueChanged",
     "AXSelectedChildrenChanged",
     "AXTitleChanged",
+    # Added via pyax EVENTS discovery:
+    "AXMenuOpened",
+    "AXMenuClosed",
+    "AXWindowMoved",
+    "AXWindowResized",
+    "AXSelectedTextChanged",
 ]
 
 # Per-notification debounce overrides (seconds).
@@ -56,6 +57,9 @@ _NOTIFICATIONS = [
 _DEBOUNCE = {
     "AXTitleChanged": 2.0,
     "AXValueChanged": 0.5,
+    "AXWindowMoved": 1.0,      # fires rapidly during drag
+    "AXWindowResized": 1.0,    # fires rapidly during resize
+    "AXSelectedTextChanged": 1.0,
 }
 _DEBOUNCE_DEFAULT = 0.5
 
@@ -65,8 +69,7 @@ _MAX_EVENTS = 200
 # Module-level state (same pattern as web.py)
 # ---------------------------------------------------------------------------
 
-# pid → {"observer": AXObserverRef, "source": CFRunLoopSource,
-#         "app_ref": AXUIElementRef, "app_name": str, "started": float}
+# pid → {"observer": AXObserverRef, "app_name": str, "started": float}
 _observers = {}
 
 _event_buffer = deque(maxlen=_MAX_EVENTS)
@@ -87,12 +90,14 @@ _observer_to_pid = {}
 # AXObserver callback
 # ---------------------------------------------------------------------------
 
-@objc.callbackFor(AXObserverCreate)
-def _on_notification(observer, element, notification, refcon):
+def _on_notification(observer, element, notification, info):
     """AXObserver callback — runs on the observer thread.
 
     Debounces by (pid, notification_type), extracts minimal info from
     the element (before it goes stale), and appends to the shared buffer.
+
+    Note: pyax's create_observer wraps this with the correct ObjC bridge
+    decorator, so no @objc.callbackFor needed here.
     """
     now = time.time()
     notif = str(notification)
@@ -185,8 +190,8 @@ def _observer_loop():
 def start_observing(pid, app_name=""):
     """Start observing an app for accessibility events.
 
-    Creates an AXObserver, registers for key notifications, and adds
-    its source to the background CFRunLoop thread.
+    Uses pyax.create_observer for cleaner observer setup, then
+    adds notifications via the observer mixin's add_notifications().
 
     Returns dict with ok/error status.
     """
@@ -199,26 +204,18 @@ def start_observing(pid, app_name=""):
     if _runloop is None:
         return {"ok": False, "error": "Observer thread failed to start"}
 
-    # Create observer
-    err, observer = AXObserverCreate(pid, _on_notification, None)
-    if err != 0:
-        return {"ok": False, "error": f"AXObserverCreate failed (error {err})"}
+    # Create observer and attach to our background runloop
+    try:
+        observer = pyax.create_observer(pid, _on_notification, cfrunloop=_runloop)
+    except Exception as e:
+        return {"ok": False, "error": f"create_observer failed: {e}"}
 
-    # Register for each notification
-    app_ref = AXUIElementCreateApplication(pid)
-    for notif in _NOTIFICATIONS:
-        AXObserverAddNotification(observer, app_ref, notif, None)
-
-    # Add to the background thread's runloop
-    source = AXObserverGetRunLoopSource(observer)
-    CFRunLoopAddSource(_runloop, source, kCFRunLoopDefaultMode)
-    CFRunLoopWakeUp(_runloop)
+    # Register for each notification (pyax mixin method)
+    observer.add_notifications(*_NOTIFICATIONS)
 
     with _lock:
         _observers[pid] = {
             "observer": observer,
-            "source": source,
-            "app_ref": app_ref,
             "app_name": app_name,
             "started": time.time(),
         }
@@ -243,15 +240,16 @@ def stop_observing(pid=None):
                 _observer_to_pid.pop(id(info["observer"]), None)
 
         if info and _runloop is not None:
-            # Remove each notification
-            for notif in _NOTIFICATIONS:
-                try:
-                    AXObserverRemoveNotification(info["observer"], info["app_ref"], notif)
-                except Exception:
-                    pass
+            observer = info["observer"]
+            # Remove notifications (pyax mixin method)
+            try:
+                observer.remove_notifications(*_NOTIFICATIONS)
+            except Exception:
+                pass
             # Detach from runloop
             try:
-                CFRunLoopRemoveSource(_runloop, info["source"], kCFRunLoopDefaultMode)
+                source = AXObserverGetRunLoopSource(observer)
+                CFRunLoopRemoveSource(_runloop, source, kCFRunLoopDefaultMode)
                 CFRunLoopWakeUp(_runloop)
             except Exception:
                 pass

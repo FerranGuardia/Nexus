@@ -270,6 +270,8 @@ def do(action: str, app: str | None = None) -> str:
         emit("Verifying changes...")
         time.sleep(0.15)
         from nexus.sense.fusion import snap, verify
+        from nexus.sense.access import invalidate_cache
+        invalidate_cache()  # Force fresh tree walk for post-action snapshot
         try:
             after = snap(pid=pid)
             changes = verify(before, after)
@@ -669,6 +671,54 @@ def workflow_detail(workflow_id: str) -> str:
     lines.append("Steps:")
     for step in wf.get("steps", []):
         lines.append(f"  {step['step_num']}. {step['action']}")
+    return "\n".join(lines)
+
+
+@mcp.resource("nexus://via")
+def via_catalog() -> str:
+    """List all recorded Via routes (learned input sequences).
+
+    Via routes capture raw user input (clicks, keys) with AX locators and
+    relative coordinates for position-independent replay at machine speed.
+    """
+    from nexus.via.recorder import list_recordings
+
+    routes = list_recordings()
+    if not routes:
+        return 'No Via routes recorded. Use do("via record <name>") to start.'
+    lines = ["Via Routes:\n"]
+    for r in routes:
+        duration = f", {r['duration_ms'] / 1000:.1f}s" if r.get("duration_ms") else ""
+        lines.append(f"  {r['id']} — {r['name']} ({r['step_count']} steps{duration})")
+    lines.append(f'\nReplay: do("via replay <id>")  |  Delete: do("via delete <id>")')
+    return "\n".join(lines)
+
+
+@mcp.resource("nexus://via/{route_id}")
+def via_detail(route_id: str) -> str:
+    """Read a Via route's recorded steps with AX locators and coordinates."""
+    from nexus.via.recorder import get_recording
+
+    route = get_recording(route_id)
+    if not route:
+        return f'Via route "{route_id}" not found.'
+    lines = [f"Via Route: {route['name']}"]
+    if route.get("app"):
+        lines.append(f"App: {route['app']}")
+    if route.get("duration_ms"):
+        lines.append(f"Duration: {route['duration_ms'] / 1000:.1f}s")
+    lines.append(f"Steps ({route.get('step_count', 0)}):")
+    for step in route.get("steps", []):
+        etype = step["event_type"]
+        if etype == "click":
+            label = step.get("ax_label", "")
+            role = (step.get("ax_role") or "").replace("AX", "")
+            target = f'"{label}" ({role})' if label else f"({step.get('x')}, {step.get('y')})"
+            lines.append(f"  {step['step_num']}. click {target}")
+        elif etype == "key":
+            lines.append(f"  {step['step_num']}. key: {step.get('key_char', '?')}")
+        elif etype == "scroll":
+            lines.append(f"  {step['step_num']}. scroll {step.get('button', '?')}")
     return "\n".join(lines)
 
 

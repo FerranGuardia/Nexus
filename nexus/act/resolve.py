@@ -140,6 +140,13 @@ def do(action, pid=None):
     if lower in ("get list", "read list", "list"):
         return _handle_read_list(pid=pid)
 
+    if lower in ("list recipes", "recipes", "get recipes"):
+        from nexus.via.recipe import list_recipes
+        recs = list_recipes()
+        lines = [f"  {r['name']:30s}  app={r['app'] or 'any':12s}  {r['pattern']}" for r in recs]
+        return {"ok": True, "action": "list_recipes",
+                "result": f"Registered recipes ({len(recs)}):\n" + "\n".join(lines)}
+
     # --- Workflow intents ---
     if lower.startswith("record start ") or lower.startswith("record "):
         return _handle_workflow(action, pid=pid)
@@ -151,6 +158,18 @@ def do(action, pid=None):
         return _handle_workflow(action, pid=pid)
     if lower.startswith("delete workflow "):
         return _handle_workflow(action, pid=pid)
+
+    # --- Via intents (learned route recording/replay) ---
+    if lower.startswith(("via record ", "via start ")):
+        return _handle_via(action, pid=pid)
+    if lower in ("via stop", "stop via"):
+        return _handle_via(action, pid=pid)
+    if lower.startswith(("via replay ", "via run ")):
+        return _handle_via(action, pid=pid)
+    if lower in ("via list", "list via", "via recordings", "list routes"):
+        return _handle_via(action, pid=pid)
+    if lower.startswith("via delete "):
+        return _handle_via(action, pid=pid)
 
     # --- Window info getters ---
     if lower in ("list windows", "get windows", "windows", "show windows"):
@@ -188,6 +207,12 @@ def do(action, pid=None):
     # --- Synonym expansion (after shortcuts/getters, before verb dispatch) ---
     action = _normalize_action(action)
     lower = action.lower()
+
+    # --- Recipe routing (direct automation before GUI) ---
+    from nexus.via.router import route as _try_recipe
+    _recipe_result = _try_recipe(action, pid=pid)
+    if _recipe_result is not None:
+        return _recipe_result
 
     # --- Verb-based intents ---
     verb, _, rest = action.partition(" ")
@@ -366,10 +391,53 @@ def _handle_workflow(action, pid=None):
     return {"ok": False, "error": f'Unknown workflow command: "{action}"'}
 
 
+def _handle_via(action, pid=None):
+    """Handle Via recording, replay, and management intents."""
+    lower = action.lower().strip()
+
+    if lower in ("via stop", "stop via"):
+        from nexus.via.recorder import stop_recording
+        return stop_recording()
+
+    if lower.startswith(("via record ", "via start ")):
+        # Extract name: "via record gmail-login" → "gmail-login"
+        name = action.split(None, 2)[-1] if len(action.split()) > 2 else "unnamed"
+        from nexus.via.recorder import start_recording
+        return start_recording(name)
+
+    if lower.startswith(("via replay ", "via run ")):
+        route_id = action.split(None, 2)[-1] if len(action.split()) > 2 else ""
+        route_id = route_id.strip()
+        from nexus.via.player import replay
+        return replay(route_id, pid=pid)
+
+    if lower in ("via list", "list via", "via recordings", "list routes"):
+        from nexus.via.recorder import list_recordings
+        routes = list_recordings()
+        if not routes:
+            return {"ok": True, "text": 'No Via routes recorded. Use do("via record <name>") to start.'}
+        lines = [f"Via Routes ({len(routes)}):"]
+        for r in routes:
+            duration = f" ({r['duration_ms'] / 1000:.1f}s)" if r.get("duration_ms") else ""
+            lines.append(f"  {r['id']} — {r['name']} ({r['step_count']} steps{duration})")
+        return {"ok": True, "text": "\n".join(lines)}
+
+    if lower.startswith("via delete "):
+        route_id = action[len("via delete "):].strip()
+        from nexus.via.recorder import delete_recording
+        deleted = delete_recording(route_id)
+        if deleted:
+            return {"ok": True, "action": "via_delete", "id": route_id}
+        return {"ok": False, "error": f'Via route "{route_id}" not found'}
+
+    return {"ok": False, "error": f'Unknown Via command: "{action}"'}
+
+
 def _run_chain(action, pid=None):
     """Execute a semicolon-separated chain of actions sequentially.
 
     Stops at the first failure and reports which step failed.
+    After an "open" step, re-resolves PID so subsequent steps target the new app.
     Returns a summary of all completed steps + the failure (if any).
     """
     import time
@@ -395,6 +463,20 @@ def _run_chain(action, pid=None):
                 "total": len(steps),
                 "steps": results,
             }
+
+        # After "open <app>", re-resolve PID for subsequent steps
+        if result.get("ok"):
+            normalized = _normalize_action(step.lower())
+            step_verb = normalized.split()[0] if normalized else ""
+            if step_verb == "open":
+                app_name = step.strip().split(None, 1)[1] if len(step.strip().split(None, 1)) > 1 else ""
+                if app_name and "." not in app_name and "/" not in app_name:
+                    # App launch (not "open file.txt") — update pid
+                    new_pid = result.get("pid")
+                    if not new_pid:
+                        new_pid = native._pid_for_app_name(app_name)
+                    if new_pid:
+                        pid = new_pid
 
         results.append(step_summary)
         # Brief pause between steps to let UI settle
