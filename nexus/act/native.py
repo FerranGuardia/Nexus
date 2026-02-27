@@ -5,12 +5,40 @@ Preferred over raw input because these are semantic:
 """
 
 import subprocess
+import time as _time
 from nexus.sense.access import (
     ax_attr, ax_perform, ax_set, ax_actions,
     find_elements, frontmost_app, describe_app,
-    AXUIElementCreateApplication,
+    invalidate_cache, AXUIElementCreateApplication,
 )
 from nexus.state import emit
+
+
+def ensure_focus(pid):
+    """Ensure the app with this PID is frontmost. No-op if already focused.
+
+    Uses NSRunningApplication.activateWithOptions_ (~5ms) instead of
+    spawning osascript (~50ms). Returns True if app is (or was made)
+    focused, False if app not found.
+    """
+    if pid is None:
+        return True  # No target — frontmost is fine
+
+    current = frontmost_app()
+    if current and current["pid"] == pid:
+        return True  # Already focused, fast path
+
+    # Activate via NSRunningApplication (faster than AppleScript subprocess)
+    from AppKit import NSWorkspace, NSApplicationActivateIgnoringOtherApps
+    ws = NSWorkspace.sharedWorkspace()
+    for app in ws.runningApplications():
+        if app.processIdentifier() == pid:
+            app.activateWithOptions_(NSApplicationActivateIgnoringOtherApps)
+            _time.sleep(0.15)
+            invalidate_cache()
+            return True
+
+    return False  # App not found
 
 
 def click_element(name, pid=None, role=None):

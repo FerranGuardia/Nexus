@@ -472,7 +472,7 @@ class TestFusionIntegration:
         see(app=123)
 
         # Should have populated the cache
-        cached, hash_val = spatial_get(123, max_elements=max(80 * 2, 150))
+        cached, hash_val = spatial_get(123, max_elements=max(50 * 2, 150))
         assert cached is not None
         assert len(cached) == 1
         assert cached[0]["label"] == "Save"
@@ -494,7 +494,7 @@ class TestFusionIntegration:
             {"role": "button", "label": "Cached", "_ax_role": "AXButton",
              "pos": [100, 50], "enabled": True},
         ]
-        spatial_put(123, elements, max_elements=max(80 * 2, 150))
+        spatial_put(123, elements, max_elements=max(50 * 2, 150))
 
         result = see(app=123)
 

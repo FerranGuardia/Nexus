@@ -11,13 +11,14 @@ first try via automatic label substitution.
 """
 
 import time as _time
+from collections import deque
 from datetime import datetime
 
 MAX_ACTIONS = 500          # FIFO ring buffer cap
 CORRELATION_WINDOW = 30    # seconds: max gap between fail→succeed to correlate
 
 # Session-level: recent failures awaiting correlation (in-memory only)
-_pending_failures = []  # list of {app, verb, target, ts}
+_pending_failures = deque()  # deque of {app, verb, target, ts} — O(1) popleft
 
 
 # ---------------------------------------------------------------------------
@@ -112,7 +113,7 @@ def correlate_success(app_name, verb, target):
                 and now - f["ts"] < CORRELATION_WINDOW):
             original = f["target"]
             record_label(original, target_lower, app_name)
-            _pending_failures.pop(i)
+            del _pending_failures[i]
             return original
 
     return None
@@ -122,7 +123,7 @@ def _prune_old_failures():
     """Remove failures older than the correlation window."""
     cutoff = _time.time() - CORRELATION_WINDOW
     while _pending_failures and _pending_failures[0]["ts"] < cutoff:
-        _pending_failures.pop(0)
+        _pending_failures.popleft()
 
 
 # ---------------------------------------------------------------------------

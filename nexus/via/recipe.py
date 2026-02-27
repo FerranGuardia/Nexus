@@ -34,12 +34,28 @@ class Recipe:
 _registry: list[Recipe] = []
 _loaded: bool = False
 
+# Partitioned index: {app_key: [Recipe]} and None for global recipes.
+# Rebuilt on registration. Avoids scanning all 41+ recipes on every do().
+_by_app: dict[str | None, list[Recipe]] = {}
+_partitioned: bool = False
+
+
+def _rebuild_partition():
+    """Rebuild the app-partitioned index from the registry."""
+    global _partitioned
+    _by_app.clear()
+    for r in _registry:
+        _by_app.setdefault(r.app, []).append(r)
+    _partitioned = True
+
 
 def recipe(pattern, app=None, priority=50):
     """Decorator to register an intent recipe."""
+    global _partitioned
     compiled = re.compile(pattern, re.IGNORECASE)
 
     def decorator(fn):
+        global _partitioned
         module = fn.__module__.rsplit(".", 1)[-1] if fn.__module__ else "unknown"
         name = f"{module}.{fn.__name__}"
         r = Recipe(
@@ -54,9 +70,11 @@ def recipe(pattern, app=None, priority=50):
             if existing.name == name:
                 _registry[i] = r
                 _registry.sort(key=lambda x: x.priority)
+                _partitioned = False  # Invalidate partition
                 return fn
         _registry.append(r)
         _registry.sort(key=lambda x: x.priority)
+        _partitioned = False  # Invalidate partition
         return fn
 
     return decorator
@@ -66,22 +84,37 @@ def recipe(pattern, app=None, priority=50):
 # Matching
 # ---------------------------------------------------------------------------
 
-def match_recipe(action, pid=None):
+def match_recipe(action, pid=None, app_name=None):
     """Find first matching recipe for this action.
+
+    Args:
+        action: Intent string to match against recipes.
+        pid: Process ID (used to determine app if app_name not given).
+        app_name: App name (avoids redundant ObjC call if caller knows it).
 
     Returns (Recipe, re.Match) or (None, None).
     """
     _ensure_loaded()
-    app_name = _current_app(pid)
+    if not _partitioned:
+        _rebuild_partition()
 
-    for r in _registry:
-        # Skip if recipe is app-specific and wrong app
-        if r.app and app_name and r.app not in app_name.lower():
-            continue
-        # If recipe is app-specific and we can't determine current app, skip
-        if r.app and not app_name:
-            continue
+    if app_name is None:
+        app_name = _current_app(pid)
 
+    app_lower = app_name.lower() if app_name else ""
+
+    # Check app-specific recipes first, then global
+    candidates = []
+    if app_lower:
+        for app_key, recipes in _by_app.items():
+            if app_key and app_key in app_lower:
+                candidates.extend(recipes)
+    # Always include global recipes (app=None)
+    candidates.extend(_by_app.get(None, []))
+    # Sort by priority (partitions may interleave)
+    candidates.sort(key=lambda r: r.priority)
+
+    for r in candidates:
         m = r.pattern.search(action)
         if m:
             return r, m

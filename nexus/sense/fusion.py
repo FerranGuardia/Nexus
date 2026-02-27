@@ -12,7 +12,7 @@ from nexus.hooks import fire
 _last_snapshot = None
 
 
-def see(app=None, query=None, screenshot=False, menus=False, diff=False, content=False, observe=False, max_elements=80):
+def see(app=None, query=None, screenshot=False, menus=False, diff=False, content=False, observe=False, max_elements=50):
     """Main perception function. Returns a text snapshot of the computer.
 
     Args:
@@ -62,14 +62,16 @@ def see(app=None, query=None, screenshot=False, menus=False, diff=False, content
         focus_line = f"Focus: {_format_element(focus)}"
         result_parts.append(focus_line)
 
-    # Windows list
+    # Windows list (capped at 8 for token efficiency)
     wins = access.windows()
     if wins:
         result_parts.append("")
         result_parts.append(f"Windows ({len(wins)}):")
-        for w in wins[:15]:
+        for w in wins[:8]:
             title_part = f' — "{w["title"]}"' if w["title"] else ""
             result_parts.append(f'  {w["app"]}{title_part}')
+        if len(wins) > 8:
+            result_parts.append(f"  ... and {len(wins) - 8} more")
 
     # Menu bar (what commands are available) — capped to 150
     max_menu_items = 150
@@ -330,8 +332,13 @@ def _is_group_container(el):
     return el.get("_ax_role", "") in _GROUP_AX_ROLES
 
 
-def _format_element(el):
-    """Format an element as a compact one-liner."""
+def _format_element(el, show_pos=False):
+    """Format an element as a compact one-liner.
+
+    Args:
+        show_pos: Include position coordinates (default False — saves tokens).
+            Positions are still available via see(query=...) or element dicts.
+    """
     role = el.get("role", "?")
     label = el.get("label", "")
     value = el.get("value", "")
@@ -344,9 +351,9 @@ def _format_element(el):
         parts.append(f'"{label}"')
     if value:
         # Truncate long values
-        v = value if len(value) <= 60 else value[:57] + "..."
+        v = value if len(value) <= 40 else value[:37] + "..."
         parts.append(f"= {v}")
-    if pos:
+    if show_pos and pos:
         parts.append(f"@ {pos[0]},{pos[1]}")
     if focused:
         parts.append("*focused*")

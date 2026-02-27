@@ -23,9 +23,42 @@ Context conventions:
 """
 
 import threading
+import time as _time
+from collections import deque
 
 _hooks = {}  # {event_name: [(priority, name, fn), ...]}
 _lock = threading.Lock()
+
+# ---------------------------------------------------------------------------
+# Error ring buffer — captures suppressed exceptions for debugging
+# ---------------------------------------------------------------------------
+
+_MAX_ERRORS = 20
+_error_ring = deque(maxlen=_MAX_ERRORS)
+
+
+def record_error(source, exc):
+    """Record a suppressed exception in the ring buffer.
+
+    Args:
+        source: Where the error occurred (e.g. "hook:learning_record", "fusion:see").
+        exc: The Exception object.
+    """
+    _error_ring.append({
+        "ts": _time.time(),
+        "source": source,
+        "error": f"{type(exc).__name__}: {exc}",
+    })
+
+
+def recent_errors(n=20):
+    """Return the last N suppressed errors (newest first)."""
+    return list(reversed(list(_error_ring)))[:n]
+
+
+def clear_errors():
+    """Clear the error ring buffer."""
+    _error_ring.clear()
 
 
 def register(event, fn, priority=50, name=None):
@@ -66,8 +99,8 @@ def fire(event, ctx):
                 if result.get("stop"):
                     return result
                 ctx = result
-        except Exception:
-            pass  # Hooks must never break the pipeline
+        except Exception as e:
+            record_error(f"hook:{_name}", e)  # Capture for debugging
 
     return ctx
 
@@ -358,6 +391,123 @@ def _graph_record_hook(ctx):
 
 
 # ---------------------------------------------------------------------------
+# Phase 10: Auto-dismiss safe system dialogs
+# ---------------------------------------------------------------------------
+
+# Safe dialogs — auto-click the mapped button when auto_dismiss is enabled
+_SAFE_DIALOGS = {
+    "gatekeeper": "open",
+    "folder_permission": "ok",
+    "folder_access": "ok",
+}
+
+# Unsafe dialogs — always block and inform the agent
+_UNSAFE_DIALOGS = {
+    "password_prompt",
+    "auth_prompt",
+    "keychain_access",
+    "network_permission",
+}
+
+
+def _button_label_map(button_key):
+    """Map button keys to expected label text (including Spanish)."""
+    mapping = {
+        "open": {"open", "abrir"},
+        "ok": {"ok", "aceptar"},
+        "cancel": {"cancel", "cancelar"},
+        "allow": {"allow", "permitir"},
+    }
+    return mapping.get(button_key.lower(), {button_key.lower()})
+
+
+def _click_dialog_button(dialog, classification, button_key):
+    """Click a button on a system dialog using OCR or template coordinates."""
+    try:
+        # Try OCR-based button positions first (pixel-accurate)
+        expected = _button_label_map(button_key)
+        for btn in classification.get("buttons", []):
+            btn_label = btn.get("label", "").lower()
+            if btn_label in expected or button_key.lower() in btn_label:
+                from nexus.act.input import click
+
+                click(btn["center_x"], btn["center_y"])
+                return True
+
+        # Fallback: template relative coordinates
+        bounds = dialog.get("bounds", {})
+        if not bounds:
+            return False
+
+        from nexus.sense.fusion import _ocr_dialog_region
+        from nexus.sense.templates import match_template, resolve_button
+
+        ocr_results = _ocr_dialog_region(dialog)
+        ocr_text = " ".join(r.get("text", "") for r in ocr_results) if ocr_results else ""
+        template_id, template = match_template(ocr_text, dialog.get("process"))
+        if template:
+            coords = resolve_button(template, button_key, bounds)
+            if coords:
+                from nexus.act.input import click
+
+                click(coords[0], coords[1])
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _auto_dismiss_dialog_hook(ctx):
+    """before_do: Auto-dismiss safe system dialogs before executing action.
+
+    When auto_dismiss is enabled and a system dialog is blocking:
+    - Safe dialogs (Gatekeeper, folder access): auto-click and proceed.
+    - Unsafe dialogs (password, keychain): stop with error for agent.
+    When auto_dismiss is disabled: detect and add count to ctx only.
+    """
+    try:
+        from nexus.sense.system import detect_system_dialogs, classify_dialog
+
+        dialogs = detect_system_dialogs()
+        if not dialogs:
+            return ctx
+
+        # Check preference
+        from nexus.mind.permissions import _check_auto_dismiss
+
+        if not _check_auto_dismiss():
+            # Inform but don't act
+            ctx["system_dialogs"] = len(dialogs)
+            return ctx
+
+        for dialog in dialogs:
+            from nexus.sense.fusion import _ocr_dialog_region
+
+            ocr_results = _ocr_dialog_region(dialog)
+            classification = classify_dialog(dialog, ocr_results)
+            dialog_type = classification.get("type", "unknown")
+
+            if dialog_type in _UNSAFE_DIALOGS:
+                ctx["stop"] = True
+                ctx["error"] = (
+                    f"System dialog blocking: {classification['description']}. "
+                    f"{classification.get('suggested_action', 'User must handle.')} "
+                    f"This dialog requires user intervention."
+                )
+                return ctx
+
+            if dialog_type in _SAFE_DIALOGS:
+                button_key = _SAFE_DIALOGS[dialog_type]
+                _click_dialog_button(dialog, classification, button_key)
+                import time
+
+                time.sleep(0.3)
+    except Exception:
+        pass
+    return ctx
+
+
+# ---------------------------------------------------------------------------
 # Bootstrap — register all built-in hooks
 # ---------------------------------------------------------------------------
 
@@ -370,6 +520,7 @@ def register_builtins():
     register("after_see", _system_dialog_hook, priority=60, name="system_dialog")
     register("after_see", _learning_hints_hook, priority=70, name="learning_hints")
     register("before_do", _circuit_breaker_hook, priority=10, name="circuit_breaker")
+    register("before_do", _auto_dismiss_dialog_hook, priority=20, name="auto_dismiss")
     register("after_do", _learning_record_hook, priority=10, name="learning_record")
     register("after_do", _journal_record_hook, priority=20, name="journal_record")
     register("after_do", _workflow_record_hook, priority=30, name="workflow_record")

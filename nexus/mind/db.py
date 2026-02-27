@@ -4,11 +4,15 @@ Replaces the previous JSON file stores (memory.json, learned.json).
 Also provides tables for Phase 8 features: workflows, navigation graph.
 
 Storage: ~/.nexus/nexus.db (WAL mode, zero new deps — stdlib sqlite3).
+
+Supports batch() context manager for grouping multiple writes into one
+transaction (used by the hook pipeline to avoid per-write commits).
 """
 
 import json
 import sqlite3
 import threading
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -25,6 +29,10 @@ DB_PATH = DB_DIR / "nexus.db"
 
 _conn = None
 _lock = threading.Lock()
+_batch_depth = 0  # > 0 means we're inside a batch() — defer commits
+
+# In-memory action count tracker (avoids SELECT COUNT(*) on every insert)
+_action_count = None  # None = not initialized yet
 
 _SCHEMA_SQL = """
 -- User memory (migrated from memory.json)
@@ -108,6 +116,10 @@ CREATE TABLE IF NOT EXISTS graph_edges (
     last_used TEXT NOT NULL
 );
 
+-- Index for edge lookups (avoids full table scan in edge_upsert)
+CREATE INDEX IF NOT EXISTS idx_graph_edges_lookup
+    ON graph_edges(from_hash, to_hash, action);
+
 -- Via routes (recorded input sequences — Phase 8b)
 CREATE TABLE IF NOT EXISTS via_routes (
     id TEXT PRIMARY KEY,
@@ -163,11 +175,45 @@ def _get_conn():
 
 def close():
     """Close the connection (for clean shutdown and test teardown)."""
-    global _conn
+    global _conn, _action_count
     with _lock:
         if _conn is not None:
             _conn.close()
             _conn = None
+        _action_count = None
+
+
+def _maybe_commit(conn):
+    """Commit unless inside a batch() — defers to batch exit."""
+    if _batch_depth == 0:
+        conn.commit()
+
+
+@contextmanager
+def batch():
+    """Group multiple writes into a single transaction.
+
+    Usage:
+        with db.batch():
+            db.action_insert(...)
+            db.method_upsert(...)
+            db.node_upsert(...)
+        # Single commit happens here
+
+    Nestable — only the outermost batch commits.
+    """
+    global _batch_depth
+    conn = _get_conn()
+    _batch_depth += 1
+    try:
+        yield conn
+    finally:
+        _batch_depth -= 1
+        if _batch_depth == 0:
+            try:
+                conn.commit()
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -279,7 +325,7 @@ def mem_set(key, value, updated):
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated=excluded.updated",
             (key, value, updated),
         )
-        conn.commit()
+        _maybe_commit(conn)
 
 
 def mem_delete(key):
@@ -287,7 +333,7 @@ def mem_delete(key):
     conn = _get_conn()
     with _lock:
         cursor = conn.execute("DELETE FROM memory WHERE key = ?", (key,))
-        conn.commit()
+        _maybe_commit(conn)
         return cursor.rowcount > 0
 
 
@@ -303,7 +349,7 @@ def mem_clear():
     conn = _get_conn()
     with _lock:
         conn.execute("DELETE FROM memory")
-        conn.commit()
+        _maybe_commit(conn)
 
 
 # ---------------------------------------------------------------------------
@@ -333,7 +379,7 @@ def label_upsert(app, target, mapped):
             "mapped=excluded.mapped, hits=hits+1, updated=excluded.updated",
             (app, target, mapped, now),
         )
-        conn.commit()
+        _maybe_commit(conn)
 
 
 def label_get_all_for_app(app):
@@ -363,7 +409,8 @@ def label_count(exclude_global=False, global_only=False):
 # ---------------------------------------------------------------------------
 
 def action_insert(ts, app, intent, ok, verb=None, target=None, method=None, via_label=None):
-    """Insert an action record."""
+    """Insert an action record. Tracks count in-memory."""
+    global _action_count
     conn = _get_conn()
     with _lock:
         conn.execute(
@@ -371,18 +418,25 @@ def action_insert(ts, app, intent, ok, verb=None, target=None, method=None, via_
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (ts, app, intent, 1 if ok else 0, verb, target, method, via_label),
         )
-        conn.commit()
+        _maybe_commit(conn)
+        if _action_count is not None:
+            _action_count += 1
 
 
 def action_count():
-    """Count total action records."""
+    """Count total action records. Uses in-memory tracker after first call."""
+    global _action_count
+    if _action_count is not None:
+        return _action_count
     conn = _get_conn()
     row = conn.execute("SELECT COUNT(*) FROM actions").fetchone()
-    return row[0]
+    _action_count = row[0]
+    return _action_count
 
 
 def action_trim(max_rows):
     """Delete oldest rows beyond max_rows (FIFO enforcement)."""
+    global _action_count
     conn = _get_conn()
     with _lock:
         conn.execute(
@@ -390,7 +444,8 @@ def action_trim(max_rows):
             "(SELECT id FROM actions ORDER BY id DESC LIMIT ?)",
             (max_rows,),
         )
-        conn.commit()
+        _maybe_commit(conn)
+        _action_count = max_rows  # After trim, count == max_rows
 
 
 def action_list(app=None, limit=500):
@@ -423,7 +478,7 @@ def method_upsert(app, method, ok):
             f"ON CONFLICT(app, method) DO UPDATE SET {col}={col}+1",
             (app, method, 1 if ok else 0, 0 if ok else 1),
         )
-        conn.commit()
+        _maybe_commit(conn)
 
 
 def method_stats_for_app(app):
@@ -456,7 +511,7 @@ def workflow_create(id, name, app=None):
             "INSERT INTO workflows (id, name, app, created, updated) VALUES (?, ?, ?, ?, ?)",
             (id, name, app, now, now),
         )
-        conn.commit()
+        _maybe_commit(conn)
 
 
 def workflow_get(id):
@@ -484,7 +539,7 @@ def workflow_delete(id):
     conn = _get_conn()
     with _lock:
         cursor = conn.execute("DELETE FROM workflows WHERE id = ?", (id,))
-        conn.commit()
+        _maybe_commit(conn)
         return cursor.rowcount > 0
 
 
@@ -498,7 +553,7 @@ def workflow_update_stats(id, ok):
             f"UPDATE workflows SET {col}={col}+1, updated=? WHERE id=?",
             (now, id),
         )
-        conn.commit()
+        _maybe_commit(conn)
 
 
 def step_insert(workflow_id, step_num, action, expected_hash=None, timeout_ms=5000):
@@ -510,7 +565,7 @@ def step_insert(workflow_id, step_num, action, expected_hash=None, timeout_ms=50
             "VALUES (?, ?, ?, ?, ?)",
             (workflow_id, step_num, action, expected_hash, timeout_ms),
         )
-        conn.commit()
+        _maybe_commit(conn)
 
 
 def steps_for_workflow(workflow_id):
@@ -540,7 +595,7 @@ def node_upsert(hash, app, label=None):
             "label=COALESCE(excluded.label, label)",
             (hash, app, label, now, now),
         )
-        conn.commit()
+        _maybe_commit(conn)
 
 
 def node_get(hash):
@@ -553,11 +608,11 @@ def node_get(hash):
 
 
 def edge_upsert(from_hash, to_hash, action, ok, elapsed):
-    """Insert or update a graph edge."""
+    """Insert or update a graph edge. Uses index on (from_hash, to_hash, action)."""
     conn = _get_conn()
     now = datetime.now().isoformat()
     with _lock:
-        # Check for existing edge
+        # Check for existing edge (uses idx_graph_edges_lookup index)
         row = conn.execute(
             "SELECT id, success_count, fail_count, avg_elapsed FROM graph_edges "
             "WHERE from_hash=? AND to_hash=? AND action=?",
@@ -577,7 +632,7 @@ def edge_upsert(from_hash, to_hash, action, ok, elapsed):
                 "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (from_hash, to_hash, action, 1 if ok else 0, 0 if ok else 1, elapsed, now),
             )
-        conn.commit()
+        _maybe_commit(conn)
 
 
 def edges_from(hash):
@@ -610,7 +665,7 @@ def via_route_create(id, name, app=None):
             "INSERT INTO via_routes (id, name, app, created) VALUES (?, ?, ?, ?)",
             (id, name, app, now),
         )
-        conn.commit()
+        _maybe_commit(conn)
 
 
 def via_route_get(id):
@@ -636,7 +691,7 @@ def via_route_delete(id):
     conn = _get_conn()
     with _lock:
         cursor = conn.execute("DELETE FROM via_routes WHERE id = ?", (id,))
-        conn.commit()
+        _maybe_commit(conn)
         return cursor.rowcount > 0
 
 
@@ -648,7 +703,7 @@ def via_route_update(id, duration_ms=None, step_count=None):
             conn.execute("UPDATE via_routes SET duration_ms=? WHERE id=?", (duration_ms, id))
         if step_count is not None:
             conn.execute("UPDATE via_routes SET step_count=? WHERE id=?", (step_count, id))
-        conn.commit()
+        _maybe_commit(conn)
 
 
 def via_step_insert(route_id, step_num, ts_offset_ms, event_type,
@@ -670,7 +725,7 @@ def via_step_insert(route_id, step_num, ts_offset_ms, event_type,
              x, y, rel_x, rel_y, window_x, window_y, window_w, window_h,
              button, key_code, key_char, mod_json, ax_role, ax_label, pid, app_name),
         )
-        conn.commit()
+        _maybe_commit(conn)
 
 
 def via_steps_for_route(route_id):

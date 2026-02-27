@@ -41,7 +41,7 @@ def _handle_type(rest, pid=None):
     return {"ok": True, "action": "type", "text": text}
 
 
-def _handle_press(keys_str):
+def _handle_press(keys_str, pid=None):
     """Handle press intents: 'press cmd+s', 'press enter'."""
     if not keys_str:
         return {"ok": False, "error": "No key specified"}

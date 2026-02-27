@@ -29,6 +29,11 @@ import time as _time
 _tree_cache = {}
 _CACHE_TTL = 1.0  # seconds
 
+# Lightweight caches for frequently-called ObjC bridge functions
+_app_cache = {}        # {"frontmost": (ts, result), "running": (ts, result)}
+_APP_CACHE_TTL = 0.5   # seconds — these change rarely, never within a single tool call
+_bundle_id_cache = {}   # {pid: bundle_id} — stable for app lifetime
+
 
 def _cache_get(key):
     """Get a cached result if still fresh."""
@@ -47,6 +52,7 @@ def _cache_set(key, result):
 def invalidate_cache():
     """Clear the tree cache (call after mutations if needed)."""
     _tree_cache.clear()
+    _app_cache.clear()  # Also clear app caches so post-action state is fresh
 
 
 # ---------------------------------------------------------------------------
@@ -301,20 +307,37 @@ def _extract_size(value):
 
 
 def frontmost_app():
-    """Get the frontmost application info."""
+    """Get the frontmost application info. Cached for 0.5s."""
+    now = _time.time()
+    cached = _app_cache.get("frontmost")
+    if cached:
+        ts, result = cached
+        if now - ts < _APP_CACHE_TTL:
+            return result
+
     ws = NSWorkspace.sharedWorkspace()
     app = ws.frontmostApplication()
     if not app:
+        _app_cache["frontmost"] = (now, None)
         return None
-    return {
+    result = {
         "name": app.localizedName(),
         "pid": app.processIdentifier(),
         "bundle_id": app.bundleIdentifier() or "",
     }
+    _app_cache["frontmost"] = (now, result)
+    return result
 
 
 def running_apps():
-    """Get all regular (visible) running applications."""
+    """Get all regular (visible) running applications. Cached for 0.5s."""
+    now = _time.time()
+    cached = _app_cache.get("running")
+    if cached:
+        ts, result = cached
+        if now - ts < _APP_CACHE_TTL:
+            return result
+
     ws = NSWorkspace.sharedWorkspace()
     apps = ws.runningApplications()
     result = []
@@ -327,6 +350,7 @@ def running_apps():
                 "bundle_id": a.bundleIdentifier() or "",
                 "active": bool(a.isActive()),
             })
+    _app_cache["running"] = (now, result)
     return result
 
 
@@ -1053,13 +1077,19 @@ AXUIElementCreateApplication = pyax.get_application_from_pid
 
 
 def _bundle_id_for_pid(pid, app_info=None):
-    """Get bundle ID for a PID. Uses cached app_info if available."""
+    """Get bundle ID for a PID. Uses cached app_info or PID cache."""
     if app_info and app_info.get("bundle_id"):
         return app_info["bundle_id"]
+    # Check PID-keyed cache (stable for app lifetime)
+    if pid in _bundle_id_cache:
+        return _bundle_id_cache[pid]
     # Look up from running apps
     for a in running_apps():
         if a["pid"] == pid:
-            return a.get("bundle_id", "")
+            bid = a.get("bundle_id", "")
+            if bid:
+                _bundle_id_cache[pid] = bid
+            return bid
     return ""
 
 

@@ -264,6 +264,8 @@ def do(action: str, app: str | None = None) -> str:
         result = _maybe_retry_wrong_app(result, action, app, pid, _do, emit)
 
     # Snapshot after + verify (brief pause lets UI update)
+    # invalidate_cache() forces a fresh tree walk; snap() populates the spatial
+    # cache so compact_state() later gets a free hit (avoids a third walk).
     changes = ""
     after = None
     if before is not None and result.get("ok"):
@@ -273,24 +275,37 @@ def do(action: str, app: str | None = None) -> str:
         from nexus.sense.access import invalidate_cache
         invalidate_cache()  # Force fresh tree walk for post-action snapshot
         try:
-            after = snap(pid=pid)
+            after = snap(pid=pid)  # Also populates spatial cache for compact_state()
             changes = verify(before, after)
         except Exception:
             changes = ""
 
     # Hook: after_do — learning, journal, workflow recording, graph recording
+    # Wrapped in db.batch() so all DB writes are a single transaction
     from nexus.hooks import fire
     verb, target = _parse_verb_target(action)
     app_name = _app_name_for_learning(app, pid)
     before_hash = before.get("layout_hash") if before else None
     after_hash = after.get("layout_hash") if after else None
-    fire("after_do", {
-        "action": action, "pid": pid, "result": result,
-        "app_name": app_name, "elapsed": round(time.time() - _do_start_ts, 2),
-        "changes": changes, "verb": verb, "target": target,
-        "app_param": app,
-        "before_hash": before_hash, "after_hash": after_hash,
-    })
+    try:
+        from nexus.mind.db import batch as _db_batch
+        with _db_batch():
+            fire("after_do", {
+                "action": action, "pid": pid, "result": result,
+                "app_name": app_name, "elapsed": round(time.time() - _do_start_ts, 2),
+                "changes": changes, "verb": verb, "target": target,
+                "app_param": app,
+                "before_hash": before_hash, "after_hash": after_hash,
+            })
+    except Exception:
+        # Fallback: fire hooks without batching if db import fails
+        fire("after_do", {
+            "action": action, "pid": pid, "result": result,
+            "app_name": app_name, "elapsed": round(time.time() - _do_start_ts, 2),
+            "changes": changes, "verb": verb, "target": target,
+            "app_param": app,
+            "before_hash": before_hash, "after_hash": after_hash,
+        })
 
     # Format as readable text
     parts = []
@@ -458,6 +473,16 @@ def memory(
                 f"Actions recorded: {s['actions_recorded']}",
                 f"Apps tracked: {s['apps_tracked']}",
             ]
+            # Include suppressed errors from ring buffer
+            try:
+                from nexus.hooks import recent_errors
+                errors = recent_errors(5)
+                if errors:
+                    parts.append(f"\nRecent suppressed errors ({len(errors)}):")
+                    for err in errors:
+                        parts.append(f"  [{err['source']}] {err['error']}")
+            except Exception:
+                pass
             return "\n".join(parts)
         except Exception:
             return "Learning system not initialized."
@@ -724,4 +749,19 @@ def via_detail(route_id: str) -> str:
 
 def main():
     """Start the MCP server (stdio transport)."""
+    try:
+        from ApplicationServices import AXIsProcessTrusted
+
+        if not AXIsProcessTrusted():
+            import sys
+
+            print(
+                "WARNING: Accessibility permission not granted. "
+                "Nexus will have limited functionality. "
+                "Run ./nexus-setup.sh or enable in System Settings > "
+                "Privacy & Security > Accessibility.",
+                file=sys.stderr,
+            )
+    except Exception:
+        pass
     mcp.run(transport="stdio")

@@ -1,4 +1,4 @@
-"""System control recipes — volume, mute, dark mode, lock, sleep, screenshot."""
+"""System control recipes — volume, mute, dark mode, lock, sleep, screenshot, permissions."""
 
 from nexus.via.recipe import recipe, applescript, cli
 
@@ -86,3 +86,12 @@ def set_brightness(m, pid=None):
         f'tell app "System Events" to tell process "Control Center" '
         f"to set value of slider 1 of group 1 to {normalized}"
     )
+
+
+@recipe(r"^(?:check |show |get )?permissions?(?: status)?$")
+def check_permissions_recipe(m, pid=None):
+    """Check Nexus permission status."""
+    from nexus.mind.permissions import check_permissions
+
+    result = check_permissions()
+    return {"ok": True, "result": result["summary"], "text": result["summary"]}

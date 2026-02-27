@@ -270,57 +270,57 @@ class TestDoRouting:
     def test_press_single_key_enter(self, mock_handle_press, mock_native, mock_raw_input):
         mock_handle_press.return_value = {"ok": True, "action": "press", "keys": ["return"]}
         result = do("press enter")
-        mock_handle_press.assert_called_once_with("enter")
+        mock_handle_press.assert_called_once_with("enter", pid=None)
         assert result["ok"] is True
 
     @patch("nexus.act.resolve._handle_press")
     def test_press_combo_cmd_s(self, mock_handle_press, mock_native, mock_raw_input):
         mock_handle_press.return_value = {"ok": True, "action": "press", "keys": ["command", "s"]}
         result = do("press cmd+s")
-        mock_handle_press.assert_called_once_with("cmd+s")
+        mock_handle_press.assert_called_once_with("cmd+s", pid=None)
         assert result["ok"] is True
 
     @patch("nexus.act.resolve._handle_press")
     def test_press_combo_ctrl_shift_p(self, mock_handle_press, mock_native, mock_raw_input):
         mock_handle_press.return_value = {"ok": True}
         do("press ctrl+shift+p")
-        mock_handle_press.assert_called_once_with("ctrl+shift+p")
+        mock_handle_press.assert_called_once_with("ctrl+shift+p", pid=None)
 
     @patch("nexus.act.resolve._handle_press")
     def test_press_escape(self, mock_handle_press, mock_native, mock_raw_input):
         mock_handle_press.return_value = {"ok": True}
         do("press esc")
-        mock_handle_press.assert_called_once_with("esc")
+        mock_handle_press.assert_called_once_with("esc", pid=None)
 
     @patch("nexus.act.resolve._handle_press")
     def test_press_tab(self, mock_handle_press, mock_native, mock_raw_input):
         mock_handle_press.return_value = {"ok": True}
         do("press tab")
-        mock_handle_press.assert_called_once_with("tab")
+        mock_handle_press.assert_called_once_with("tab", pid=None)
 
     @patch("nexus.act.resolve._handle_press")
     def test_press_space(self, mock_handle_press, mock_native, mock_raw_input):
         mock_handle_press.return_value = {"ok": True}
         do("press space")
-        mock_handle_press.assert_called_once_with("space")
+        mock_handle_press.assert_called_once_with("space", pid=None)
 
     @patch("nexus.act.resolve._handle_press")
     def test_press_f5(self, mock_handle_press, mock_native, mock_raw_input):
         mock_handle_press.return_value = {"ok": True}
         do("press f5")
-        mock_handle_press.assert_called_once_with("f5")
+        mock_handle_press.assert_called_once_with("f5", pid=None)
 
     @patch("nexus.act.resolve._handle_press")
     def test_press_alt_tab(self, mock_handle_press, mock_native, mock_raw_input):
         mock_handle_press.return_value = {"ok": True}
         do("press alt+tab")
-        mock_handle_press.assert_called_once_with("alt+tab")
+        mock_handle_press.assert_called_once_with("alt+tab", pid=None)
 
     @patch("nexus.act.resolve._handle_press")
     def test_press_cmd_shift_z(self, mock_handle_press, mock_native, mock_raw_input):
         mock_handle_press.return_value = {"ok": True}
         do("press cmd+shift+z")
-        mock_handle_press.assert_called_once_with("cmd+shift+z")
+        mock_handle_press.assert_called_once_with("cmd+shift+z", pid=None)
 
     # --- Type (dispatches to _handle_type) ---
 

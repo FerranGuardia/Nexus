@@ -48,6 +48,31 @@ from nexus.act.intents import (  # noqa: F401
 
 
 # ---------------------------------------------------------------------------
+# Focus helpers
+# ---------------------------------------------------------------------------
+
+# Actions exempt from pre-focus: getters, focus managers, CDP, recording mgmt
+_FOCUS_EXEMPT_PREFIXES = (
+    "get ", "read ", "clipboard", "url", "tabs", "source", "selection",
+    "hover", "observe", "where ", "window info", "console",
+    "list recipes", "recipes", "get recipes",
+    "list workflows", "get workflows", "workflows",
+    "list windows", "get windows", "windows", "show windows",
+    "via list", "list via", "via recordings", "list routes",
+    "record ",
+    "open ", "switch ", "activate ",  # these manage focus themselves
+    "navigate ", "goto ", "go to ",
+    "js ", "run js ", "eval ", "execute js ",
+    "new tab", "close tab", "switch tab",
+)
+
+
+def _is_focus_exempt(action_lower):
+    """Check if an action should skip pre-focus (getters, focus managers, CDP)."""
+    return any(action_lower.startswith(p) for p in _FOCUS_EXEMPT_PREFIXES)
+
+
+# ---------------------------------------------------------------------------
 # Router helpers
 # ---------------------------------------------------------------------------
 
@@ -90,6 +115,12 @@ def do(action, pid=None):
 
     # Check shortcuts BEFORE synonym expansion (so "select all" stays "select all")
     lower = action.lower()
+
+    # --- Pre-action focus guarantee ---
+    # When targeting a specific app (pid != None), ensure it has focus before
+    # any raw-input action. Skips getters and focus-management verbs.
+    if pid is not None and not _is_focus_exempt(lower):
+        native.ensure_focus(pid)
 
     # --- Shortcut intents ---
     if lower in ("select all", "selectall"):
@@ -209,8 +240,10 @@ def do(action, pid=None):
     lower = action.lower()
 
     # --- Recipe routing (direct automation before GUI) ---
+    # Pass app_name to avoid redundant ObjC lookup inside recipe matching
     from nexus.via.router import route as _try_recipe
-    _recipe_result = _try_recipe(action, pid=pid)
+    _recipe_app_name = _current_app_name(pid) if pid else None
+    _recipe_result = _try_recipe(action, pid=pid, app_name=_recipe_app_name)
     if _recipe_result is not None:
         return _recipe_result
 
@@ -245,7 +278,7 @@ def do(action, pid=None):
         return _handle_type(rest, pid=pid)
 
     if verb == "press":
-        return _handle_press(rest)
+        return _handle_press(rest, pid=pid)
 
     if verb == "open":
         return native.launch_app(rest)
